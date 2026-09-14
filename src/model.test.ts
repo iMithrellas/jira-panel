@@ -1,6 +1,6 @@
 import type { DataFrame } from '@grafana/data';
 import { describe, expect, it } from 'vitest';
-import { barPosition, buildTree, fitRange, jiraLink, readIssues, selectRows } from './model';
+import { barPosition, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
 
 const observed = '2026-09-06T12:00:00Z';
 const created = '2026-06-01T12:00:00Z';
@@ -134,6 +134,47 @@ describe('real parent hierarchy', () => {
     const result = selectRows(buildTree(issues(rows)), 'OPS-0', 'OPS-9999', [], new Map(), 2);
     expect(result.rows).toHaveLength(10000);
     expect(result.matchingCount).toBe(1);
+  });
+
+  it('computes descendant completion and stale rollups without counting the row itself', () => {
+    const tree = buildTree(issues([
+      record('PM-1'),
+      record('OPS-1', 'PM-1', { is_resolved: true, resolved_at: '2026-08-01T00:00:00Z' }),
+      record('REL-1', 'OPS-1', { sync_ts: '2026-08-01T00:00:00Z' }),
+    ]));
+    const rollups = computeRollups(tree, Date.parse('2026-09-01T00:00:00Z'), 24 * 3600000);
+    const pm = [...tree.nodes.values()].find((node) => node.issue.key === 'PM-1')!;
+    const ops = [...tree.nodes.values()].find((node) => node.issue.key === 'OPS-1')!;
+    expect(rollups.get(pm.issue.id)).toEqual({ descendants: 2, doneDescendants: 1, staleDescendants: 1 });
+    expect(rollups.get(ops.issue.id)).toEqual({ descendants: 1, doneDescendants: 0, staleDescendants: 1 });
+  });
+
+  it('expands through a chosen depth and collapses only fully resolved branches', () => {
+    const data = issues([
+      record('PM-1'), record('OPS-1', 'PM-1', { is_resolved: true, resolved_at: '2026-08-01T00:00:00Z' }),
+      record('REL-1', 'OPS-1', { is_resolved: true, resolved_at: '2026-08-02T00:00:00Z' }), record('OPS-2', 'PM-1'),
+    ]);
+    const tree = buildTree(data);
+    const root = tree.nodes.get(data.find((issue) => issue.key === 'PM-1')!.id)!;
+    const depth = expansionForDepth(tree, 'PM-1', 1);
+    expect(depth.get(root.issue.id)).toBe(true);
+    expect(depth.get(tree.nodes.get(data.find((issue) => issue.key === 'OPS-1')!.id)!.issue.id)).toBe(false);
+    const collapsed = collapseCompleted(tree, computeRollups(tree, Date.now(), 3600000));
+    expect(collapsed.get(root.issue.id)).toBe(true);
+    expect(collapsed.get(data.find((issue) => issue.key === 'OPS-1')!.id)).toBe(false);
+    expect(collapsed.get(data.find((issue) => issue.key === 'OPS-2')!.id)).toBe(true);
+  });
+
+  it('exports the complete filtered tree with rollups and escapes CSV cells', () => {
+    const data = issues([record('PM-1', '', { summary: 'A, "quoted" summary' }), record('OPS-1', 'PM-1')]);
+    const tree = buildTree(data);
+    const selected = selectRows(tree, 'PM-1', '', [], new Map(), 0);
+    const records = exportRecords(selected.exportRows, computeRollups(tree, Date.now(), 3600000));
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({ issue_key: 'PM-1', child_count: 1, depth: 0 });
+    expect(records[1]).toMatchObject({ issue_key: 'OPS-1', parent_key: 'PM-1', depth: 1 });
+    expect(recordsToCsv(records)).toContain('"A, ""quoted"" summary"');
+    expect(recordsToCsv([])).toBe('');
   });
 });
 

@@ -11,8 +11,11 @@ older root-level Grafana 11 demo is not the plugin development environment.
 - Expand/collapse and virtualized fixed-height rows. Only visible rows plus overscan are mounted.
 - Search by key, summary, assignee, status or issue type. Multi-project filters retain ancestor context.
 - Creation-to-resolution bars for resolved tickets; creation-to-last-observation bars for open tickets.
+- Descendant rollups on parent rows: child count, resolved child count, and stale child count.
 - Status-category colors, stale-observation markers, detail drawer and safe links to Jira.
 - Local zoom, pan and fit-to-tickets. Collapsing rows does not change the fitted time extent.
+- Large-tree controls: expand through a selected depth, collapse resolved branches, and navigate search matches.
+- CSV and JSON export of the complete current filtered tree, including collapsed descendants and rollups.
 - Missing parents remain visible as roots. Cyclic relationships are broken with a warning.
 - Light/dark Grafana themes, keyboard-operable controls, and horizontal scrolling on narrow screens.
 
@@ -133,7 +136,12 @@ Absolute Grafana time ranges disable relative panel overrides.
 | Ticket column width | 420px | Width of the hierarchy column; bounded to retain a timeline |
 
 Toolbar changes are local, not saved dashboard settings. Configure the initial
-Parent in panel options to persist it, or use a dashboard variable there. Manually
+Parent in panel options to persist it, or use a dashboard variable there. The
+**Depth** control expands all branches through that level; **Collapse completed**
+closes resolved parent tickets while leaving open branches available. Search match
+arrows jump through matching tickets and open their details. **CSV** and **JSON**
+export the complete current filtered tree, including rows hidden by collapse, with
+`child_count`, `child_done_count` and `child_stale_count` fields. Manually
 entering a key matches that key in all returned source namespaces. **Focus subtree**
 in a ticket's details retains its source identity. Relationships never cross source
 namespaces. A single panel has one Jira base URL; scope to a single Jira site when
@@ -150,11 +158,12 @@ npm run test:e2e
 ```
 
 Browser tests require the running, seeded development stack. They exercise the
-real Grafana plugin loader and VictoriaLogs query, hierarchy controls, reopened
-tickets, multi-project ancestor context, thousands of virtualized rows, mobile
-details, light/dark rendering and query-independent zoom. Images are written to
+real Grafana plugin loader and VictoriaLogs query, hierarchy controls, rollups,
+downloads, reopened tickets, multi-project ancestor context, thousands of virtualized
+rows, mobile details, light/dark rendering and query-independent zoom. Images are written to
 the ignored `test-results/` directory. Unit tests cover malformed rows, deduplication,
-source isolation, missing/cyclic parents, a 10,000-level tree, time clipping and URL safety.
+source isolation, missing/cyclic parents, a 10,000-level tree, rollups, exports,
+time clipping and URL safety.
 
 To test the exporter from the repository root:
 

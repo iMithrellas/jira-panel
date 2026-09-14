@@ -2,7 +2,7 @@ import { css } from '@emotion/css';
 import { dateTimeFormat, type GrafanaTheme2, type PanelProps } from '@grafana/data';
 import { useStyles2, useTheme2 } from '@grafana/ui';
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { barPosition, buildTree, fitRange, jiraLink, readIssues, selectRows } from './model';
+import { barPosition, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
 import { defaults, type Issue, type JiraOptions } from './types';
 
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
@@ -20,6 +20,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const [expansion, setExpansion] = useState(new Map<string, boolean>());
   const [rangeOverride, setRangeOverride] = useState<[number, number]>();
   const [selectedID, setSelectedID] = useState<string>();
+  const [matchCursor, setMatchCursor] = useState(0);
   const [clock, setClock] = useState(Date.now());
   const [scroll, setScroll] = useState({ top: 0, left: 0, height: 400 });
   const viewport = useRef<HTMLDivElement>(null);
@@ -27,10 +28,12 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const maxIssues = Math.round(clamp(options.maxIssues, defaults.maxIssues, 1, 50000));
   const initialDepth = Math.round(clamp(options.initialDepth, defaults.initialDepth, 0, 20));
   const staleMs = clamp(options.staleHours, defaults.staleHours, 1, 8760) * 3600000;
+  const [depthControl, setDepthControl] = useState(initialDepth);
 
   // Cache the O(n) data work so scrolling only renders the small virtual window.
   const parsed = useMemo(() => readIssues(data.series, maxIssues), [data.series, maxIssues]);
   const tree = useMemo(() => buildTree(parsed.issues), [parsed.issues]);
+  const rollups = useMemo(() => computeRollups(tree, clock, staleMs), [tree, clock, staleMs]);
   const selection = useMemo(() => selectRows(tree, root, deferredSearch, projects, expansion, initialDepth, rootSource),
     [tree, root, deferredSearch, projects, expansion, initialDepth, rootSource]);
   const availableProjects = useMemo(() => [...new Set(parsed.issues.map((issue) => issue.project))].filter(Boolean).sort(), [parsed.issues]);
@@ -63,10 +66,12 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     setExpansion(new Map());
     setRangeOverride(undefined);
     setSelectedID(undefined);
+    setDepthControl(initialDepth);
   }, [root, rootSource, initialDepth]);
   useEffect(() => {
     if (viewport.current) { viewport.current.scrollTop = 0; }
     setScroll((previous) => ({ ...previous, top: 0 }));
+    setMatchCursor(0);
   }, [root, rootSource, deferredSearch, projects]);
   useEffect(() => {
     const element = viewport.current;
@@ -88,6 +93,8 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
       : issue.category === 'new' ? theme.colors.text.secondary : theme.colors.warning.main;
   const duration = (issue: Issue) => `${((issue.end - issue.start) / 86400000).toLocaleString(undefined, { maximumFractionDigits: 1 })}d`;
   const toggle = (id: string, expanded: boolean) => setExpansion((previous) => new Map(previous).set(id, !expanded));
+  const expandThroughDepth = () => setExpansion(expansionForDepth(tree, root, Math.round(clamp(depthControl, initialDepth, 0, 100)), rootSource));
+  const collapseFinished = () => setExpansion(collapseCompleted(tree, rollups));
   const zoom = (factor: number) => {
     const center = (range[0] + range[1]) / 2;
     const half = Math.max(60000, Math.min(10 * 365 * 86400000, (range[1] - range[0]) * factor)) / 2;
@@ -98,6 +105,27 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     setRangeOverride([range[0] + shift, range[1] + shift]);
   };
   const link = selected ? jiraLink(replaceVariables(options.jiraBaseUrl ?? ''), selected.key) : undefined;
+  const download = (format: 'csv' | 'json') => {
+    const records = exportRecords(selection.exportRows, rollups);
+    const body = format === 'csv' ? recordsToCsv(records) : JSON.stringify(records, null, 2) + '\n';
+    const blob = new Blob([body], { type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    const scope = (root || 'all-tickets').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'tickets';
+    anchor.href = url;
+    anchor.download = `jira-${scope}.${format}`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+  const jumpToMatch = (direction: number) => {
+    if (!selection.matchingIds.length) { return; }
+    const next = (matchCursor + direction + selection.matchingIds.length) % selection.matchingIds.length;
+    const id = selection.matchingIds[next];
+    setMatchCursor(next);
+    setSelectedID(id);
+    const rowIndex = selection.rows.findIndex((row) => row.node.issue.id === id);
+    if (rowIndex >= 0 && viewport.current) { viewport.current.scrollTop = rowIndex * rowHeight; }
+  };
   const ticks = Array.from({ length: 5 }, (_, i) => range[0] + (range[1] - range[0]) * i / 4);
   const warnings = [
     parsed.truncated ? `Partial result: limited to ${maxIssues.toLocaleString()} issues. Narrow the query; parents or children may be missing.` : '',
@@ -126,11 +154,23 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
             <small>Ancestors are retained for context.</small>
           </div>
         </details>
+        {deferredSearch && <div className={styles.matchNav} role="region" aria-label="Search result navigation">
+          <button type="button" aria-label="Previous search match" disabled={!selection.matchingIds.length} onClick={() => jumpToMatch(-1)}>&lt;</button>
+          <span>{selection.matchingIds.length ? `${matchCursor + 1}/${selection.matchingIds.length}` : '0 matches'}</span>
+          <button type="button" aria-label="Next search match" disabled={!selection.matchingIds.length} onClick={() => jumpToMatch(1)}>&gt;</button>
+        </div>}
       </div>
       <div className={styles.controls}>
         <div className={styles.actions}>
           <button type="button" disabled={selection.filtering} onClick={() => setExpansion(new Map([...tree.nodes.keys()].map((id) => [id, true])))}>Expand all</button>
           <button type="button" disabled={selection.filtering} onClick={() => setExpansion(new Map([...tree.nodes.keys()].map((id) => [id, false])))}>Collapse all</button>
+          <label className={styles.depthControl}>Depth
+            <input aria-label="Expand through depth" type="number" min={0} max={100} value={depthControl} onChange={(event) => setDepthControl(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />
+          </label>
+          <button type="button" disabled={selection.filtering} onClick={expandThroughDepth}>Expand to depth</button>
+          <button type="button" disabled={selection.filtering} onClick={collapseFinished}>Collapse completed</button>
+          <button type="button" aria-label="Export CSV" disabled={!selection.exportRows.length} onClick={() => download('csv')}>CSV</button>
+          <button type="button" aria-label="Export JSON" disabled={!selection.exportRows.length} onClick={() => download('json')}>JSON</button>
           <span className={styles.count} data-testid="issue-count">{selection.matchingCount.toLocaleString()} tickets / {selection.rows.length.toLocaleString()} rows</span>
         </div>
         <div className={styles.actions}>
@@ -169,6 +209,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
         <div style={{ height: selection.rows.length * rowHeight, width: innerWidth, position: 'relative' }}>
           {visibleRows.map(({ node, depth, hasChildren, expanded, context }, index) => {
             const issue = node.issue;
+            const rollup = rollups.get(issue.id);
             const position = barPosition(issue.start, issue.end, range);
             const stale = clock - issue.observed > staleMs;
             const title = `${issue.key}: ${issue.summary}\n${issue.status} | ${issue.type} | ${issue.assignee || 'Unassigned'}\nCreated: ${format(issue.start)}\n${issue.resolved ? 'Resolved' : 'Last observed'}: ${format(issue.end)}\nLifetime: ${duration(issue)}${stale ? '\nStale observation' : ''}${node.warning ? `\n${node.warning}` : ''}`;
@@ -181,6 +222,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
                   style={{ visibility: hasChildren ? 'visible' : 'hidden' }} onClick={() => toggle(issue.id, expanded)}>{expanded ? 'v' : '>'}</button>
                 <button type="button" className={styles.ticket} style={{ opacity: context ? 0.6 : 1 }} title={title} onClick={() => setSelectedID(issue.id)}>
                   <span className={styles.key}>{issue.key}</span><span className={styles.summary}>{issue.summary || '(no summary)'}</span>
+                  {!!rollup?.descendants && <span className={styles.rollup} data-testid="rollup-badge" title={`${rollup.descendants} descendants, ${rollup.doneDescendants} done, ${rollup.staleDescendants} stale`}>{rollup.descendants} children / {rollup.doneDescendants} done{rollup.staleDescendants ? ` / ${rollup.staleDescendants} stale` : ''}</span>}
                 </button>
                 {(node.warning || stale) && <span className={styles.marker} title={node.warning || 'Stale observation'} aria-label={node.warning || 'Stale observation'}>!</span>}
               </div>
@@ -217,6 +259,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
             Parent: selected.parentKey || 'None', Assignee: selected.assignee || 'Unassigned', Priority: selected.priority || 'Not set',
             Created: format(selected.start), [selected.resolved ? 'Resolved' : 'Observed end']: format(selected.end),
             'Last observed': format(selected.observed), Lifetime: duration(selected),
+            Children: rollups.get(selected.id)?.descendants ? `${rollups.get(selected.id)!.descendants} (${rollups.get(selected.id)!.doneDescendants} done${rollups.get(selected.id)!.staleDescendants ? `, ${rollups.get(selected.id)!.staleDescendants} stale` : ''})` : 'None',
             Source: JSON.parse(selected.source).filter(Boolean).join(' / ') || 'Unspecified',
           }).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
         </dl>
@@ -245,10 +288,12 @@ function getStyles(theme: GrafanaTheme2) {
     toolbar: css({ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '8px 8px 4px', alignItems: 'center', flexShrink: 0 }),
     rootLabel: css({ display: 'flex', alignItems: 'center', gap: 8, '& input': { width: 130 } }),
     search: css({ flex: '1 1 210px' }),
+    matchNav: css({ display: 'inline-flex', alignItems: 'center', gap: 4, color: theme.colors.text.secondary, whiteSpace: 'nowrap', '& button': { padding: '4px 7px' } }),
     projects: css({ position: 'relative', '& summary': { padding: 6 } }),
     projectMenu: css({ position: 'absolute', right: 0, top: '100%', zIndex: 5, minWidth: 210, maxHeight: 260, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: `1px solid ${border}`, borderRadius: 4, background: theme.colors.background.primary, boxShadow: theme.shadows.z2, '& label': { display: 'flex', gap: 8, alignItems: 'center' } }),
     controls: css({ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 6, padding: '4px 8px 8px', flexShrink: 0 }),
     actions: css({ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }),
+    depthControl: css({ display: 'inline-flex', alignItems: 'center', gap: 4, color: theme.colors.text.secondary, '& input': { width: 46, textAlign: 'center' } }),
     count: css({ marginLeft: 8, color: theme.colors.text.secondary, fontVariantNumeric: 'tabular-nums' }),
     status: css({ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 6, padding: '6px 10px', fontSize: 11, color: theme.colors.text.secondary, borderTop: `1px solid ${border}` }),
     legend: css({ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, '& span': { display: 'inline-flex', alignItems: 'center', gap: 4 }, '& i': { width: 7, height: 7, borderRadius: 2 } }),
@@ -266,6 +311,7 @@ function getStyles(theme: GrafanaTheme2) {
     ticket: css({ '&&': { minWidth: 0, padding: 0, border: 0, background: 'none', display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', flex: 1 } }),
     key: css({ flexShrink: 0, fontFamily: theme.typography.fontFamilyMonospace, fontSize: 11, color: theme.colors.text.link }),
     summary: css({ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }),
+    rollup: css({ flexShrink: 0, color: theme.colors.text.secondary, fontSize: 10, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }),
     marker: css({ fontSize: 10, color: theme.colors.warning.text, flexShrink: 0 }),
     lane: css({ position: 'relative', flexShrink: 0, backgroundImage: `linear-gradient(to right, ${border} 1px, transparent 1px)`, backgroundSize: '25% 100%' }),
     bar: css({ '&&': { position: 'absolute', top: '22%', height: '56%', padding: '0 6px', border: 0, borderRadius: 3, textAlign: 'left', color: theme.colors.getContrastText(theme.colors.info.main), overflow: 'hidden', whiteSpace: 'nowrap', fontSize: 10, minWidth: 3, boxSizing: 'border-box' }, '& span': { pointerEvents: 'none' } }),

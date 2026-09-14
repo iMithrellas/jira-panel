@@ -8,6 +8,7 @@ test.beforeEach(async ({ page }) => {
 
 test('loads real VictoriaLogs results, expands parents and shows observed end details', async ({ page }) => {
   await expect(page.getByRole('treegrid')).toHaveAttribute('aria-rowcount', '44');
+  await expect(page.getByTestId('rollup-badge').first()).toContainText('61 children');
   await page.getByRole('region', { name: 'Jira hierarchy timeline', exact: true }).screenshot({ path: 'test-results/hierarchy-dark.png' });
   await page.getByRole('button', { name: 'Collapse all', exact: true }).click();
   await expect(page.getByTestId('jira-row')).toHaveCount(1);
@@ -29,6 +30,32 @@ test('loads real VictoriaLogs results, expands parents and shows observed end de
   await expect(page.getByText('Source: jira-exporter / demo / development', { exact: true })).toBeVisible();
 });
 
+test('exports the filtered hierarchy as CSV and JSON', async ({ page }) => {
+  await page.getByRole('textbox', { name: 'Parent ticket', exact: true }).fill('PM-100');
+  const csvDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export CSV', exact: true }).click();
+  const csv = await csvDownload;
+  expect(csv.suggestedFilename()).toBe('jira-pm-100.csv');
+  const csvStream = await csv.createReadStream();
+  let csvBody = '';
+  for await (const chunk of csvStream!) { csvBody += chunk.toString(); }
+  expect(csvBody).toContain('issue_key,parent_key,project_key');
+  expect(csvBody).toContain('PM-100');
+  expect(csvBody).toContain('child_count');
+
+  const jsonDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export JSON', exact: true }).click();
+  const json = await jsonDownload;
+  expect(json.suggestedFilename()).toBe('jira-pm-100.json');
+  const jsonStream = await json.createReadStream();
+  let jsonBody = '';
+  for await (const chunk of jsonStream!) { jsonBody += chunk.toString(); }
+  const records = JSON.parse(jsonBody) as Array<Record<string, unknown>>;
+  expect(records.length).toBe(62);
+  expect(records[0]).toHaveProperty('child_done_count');
+  expect(records.some((record) => record.project_key === 'REL')).toBe(true);
+});
+
 test('virtualizes thousands of rows, scrolls to the end, and keeps matching ancestors', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Parent ticket', exact: true }).fill('PM-300');
   await expect(page.getByTestId('issue-count')).toContainText('3,757 tickets');
@@ -42,6 +69,25 @@ test('virtualizes thousands of rows, scrolls to the end, and keeps matching ance
   await expect(page.getByTestId('jira-row')).toHaveCount(4);
   await expect(page.getByRole('treegrid')).toContainText('Scale subtask 12.24.12');
   await page.getByRole('region', { name: 'Jira hierarchy timeline', exact: true }).screenshot({ path: 'test-results/hierarchy-search.png' });
+});
+
+test('supports depth expansion, completed-branch collapse, and search navigation', async ({ page }) => {
+  await page.getByRole('textbox', { name: 'Parent ticket', exact: true }).fill('PM-300');
+  await page.getByRole('button', { name: 'Collapse all', exact: true }).click();
+  await expect(page.getByRole('treegrid')).toHaveAttribute('aria-rowcount', '1');
+  await page.getByRole('spinbutton', { name: 'Expand through depth' }).fill('1');
+  await page.getByRole('button', { name: 'Expand to depth', exact: true }).click();
+  await expect(page.getByRole('treegrid')).toHaveAttribute('aria-rowcount', '13');
+  await page.getByRole('button', { name: 'Collapse completed', exact: true }).click();
+  await expect.poll(async () => Number(await page.getByRole('treegrid').getAttribute('aria-rowcount'))).toBeLessThan(3757);
+
+  await page.getByRole('textbox', { name: 'Search tickets' }).fill('Scale subtask 12.24');
+  await expect(page.getByRole('button', { name: 'Next search match' })).toBeEnabled();
+  const matchCounter = page.getByRole('region', { name: 'Search result navigation' });
+  await expect(matchCounter).toContainText('1/12');
+  await page.getByRole('button', { name: 'Next search match' }).click();
+  await expect(matchCounter).toContainText('2/12');
+  await expect(page.getByRole('complementary')).toContainText('Scale subtask 12.24');
 });
 
 test('filters projects across roots without dropping ancestor context and surfaces orphan data', async ({ page }) => {

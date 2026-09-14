@@ -45,3 +45,9 @@ export interface TreeRow {
   hasChildren: boolean;
   context: boolean;
 }
+
+export interface Rollup {
+  descendants: number;
+  doneDescendants: number;
+  staleDescendants: number;
+}

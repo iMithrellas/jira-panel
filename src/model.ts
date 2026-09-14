@@ -1,5 +1,5 @@
 import type { DataFrame } from '@grafana/data';
-import type { Issue, IssueNode, TreeRow } from './types';
+import type { Issue, IssueNode, Rollup, TreeRow } from './types';
 
 function timestamp(value: unknown): number {
   if (typeof value === 'number') {
@@ -96,14 +96,75 @@ export function buildTree(issues: Issue[]) {
   return { nodes, roots };
 }
 
+export function computeRollups(tree: ReturnType<typeof buildTree>, now: number, staleMs: number) {
+  const rollups = new Map<string, Rollup>();
+  const visited = new Set<string>();
+  for (const start of tree.nodes.keys()) {
+    if (visited.has(start)) { continue; }
+    const stack: Array<[string, boolean]> = [[start, false]];
+    while (stack.length) {
+      const [id, expanded] = stack.pop()!;
+      if (expanded) {
+        const rollup: Rollup = { descendants: 0, doneDescendants: 0, staleDescendants: 0 };
+        for (const child of tree.nodes.get(id)!.children) {
+          const childNode = tree.nodes.get(child)!;
+          const childRollup = rollups.get(child) ?? { descendants: 0, doneDescendants: 0, staleDescendants: 0 };
+          rollup.descendants += 1 + childRollup.descendants;
+          rollup.doneDescendants += (childNode.issue.resolved ? 1 : 0) + childRollup.doneDescendants;
+          rollup.staleDescendants += (now - childNode.issue.observed > staleMs ? 1 : 0) + childRollup.staleDescendants;
+        }
+        rollups.set(id, rollup);
+        visited.add(id);
+        continue;
+      }
+      stack.push([id, true]);
+      const children = tree.nodes.get(id)!.children;
+      for (const child of children) {
+        if (!visited.has(child)) { stack.push([child, false]); }
+      }
+    }
+  }
+  return rollups;
+}
+
+function rootIDs(tree: ReturnType<typeof buildTree>, rootKey: string, rootSource?: string) {
+  const root = rootKey.trim().toLowerCase();
+  return root
+    ? [...tree.nodes.values()].filter((n) => n.issue.key.toLowerCase() === root && (!rootSource || n.issue.source === rootSource)).map((n) => n.issue.id)
+    : tree.roots;
+}
+
+export function expansionForDepth(tree: ReturnType<typeof buildTree>, rootKey: string, depth: number, rootSource?: string) {
+  const expansion = new Map<string, boolean>();
+  const stack = rootIDs(tree, rootKey, rootSource).reverse().map((id) => ({ id, depth: 0 }));
+  while (stack.length) {
+    const entry = stack.pop()!;
+    const node = tree.nodes.get(entry.id)!;
+    expansion.set(entry.id, entry.depth < depth);
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ id: node.children[i], depth: entry.depth + 1 });
+    }
+  }
+  return expansion;
+}
+
+export function collapseCompleted(tree: ReturnType<typeof buildTree>, rollups: Map<string, Rollup>) {
+  const expansion = new Map<string, boolean>();
+  for (const [id, node] of tree.nodes) {
+    const rollup = rollups.get(id);
+    // A resolved parent is operationally complete even when Jira leaves a child
+    // open; the rollup badge keeps that exception visible without expanding it.
+    const completed = node.issue.resolved || (!!rollup && rollup.descendants > 0 && rollup.doneDescendants === rollup.descendants);
+    expansion.set(id, !completed);
+  }
+  return expansion;
+}
+
 export function selectRows(
   tree: ReturnType<typeof buildTree>, rootKey: string, search: string, projects: string[],
   expansion: Map<string, boolean>, initialDepth: number, rootSource?: string
 ) {
-  const root = rootKey.trim().toLowerCase();
-  const roots = root
-    ? [...tree.nodes.values()].filter((n) => n.issue.key.toLowerCase() === root && (!rootSource || n.issue.source === rootSource)).map((n) => n.issue.id)
-    : tree.roots;
+  const roots = rootIDs(tree, rootKey, rootSource);
   const scoped: Array<{ id: string; depth: number }> = [];
   const stack = [...roots].reverse().map((id) => ({ id, depth: 0 }));
   while (stack.length) {
@@ -143,8 +204,45 @@ export function selectRows(
     rows.push({ node, depth, expanded, hasChildren, context: !matches.has(id) });
     if (!expanded) { collapsedDepth = depth; }
   }
-  return { rows, scopedCount: scoped.length, matchingCount: matches.size, filtering,
-    issues: scoped.filter(({ id }) => included.has(id)).map(({ id }) => tree.nodes.get(id)!.issue) };
+  const exportRows = scoped.filter(({ id }) => included.has(id)).map(({ id, depth }) => ({ node: tree.nodes.get(id)!, depth }));
+  return { rows, scopedCount: scoped.length, matchingCount: matches.size, matchingIds: scoped.filter(({ id }) => matches.has(id)).map(({ id }) => id), filtering,
+    exportRows, issues: exportRows.map(({ node }) => node.issue) };
+}
+
+export function exportRecords(rows: Array<{ node: IssueNode; depth: number }>, rollups: Map<string, Rollup>) {
+  return rows.map(({ node, depth }) => {
+    const rollup = rollups.get(node.issue.id) ?? { descendants: 0, doneDescendants: 0, staleDescendants: 0 };
+    return {
+      issue_key: node.issue.key,
+      parent_key: node.issue.parentKey,
+      project_key: node.issue.project,
+      summary: node.issue.summary,
+      issue_type: node.issue.type,
+      status: node.issue.status,
+      status_category: node.issue.category,
+      assignee: node.issue.assignee,
+      priority: node.issue.priority,
+      created_at: new Date(node.issue.start).toISOString(),
+      end_at: new Date(node.issue.end).toISOString(),
+      observed_at: new Date(node.issue.observed).toISOString(),
+      is_resolved: node.issue.resolved,
+      depth,
+      child_count: rollup.descendants,
+      child_done_count: rollup.doneDescendants,
+      child_stale_count: rollup.staleDescendants,
+      source: node.issue.source,
+    };
+  });
+}
+
+export function recordsToCsv(records: Array<Record<string, unknown>>) {
+  if (!records.length) { return ''; }
+  const columns = Object.keys(records[0]);
+  const cell = (value: unknown) => {
+    const text = value === undefined || value === null ? '' : String(value);
+    return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  return [columns, ...records.map((record) => columns.map((column) => record[column]))].map((row) => row.map(cell).join(',')).join('\r\n') + '\r\n';
 }
 
 export function fitRange(issues: Issue[]): [number, number] {
