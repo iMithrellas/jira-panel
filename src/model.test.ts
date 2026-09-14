@@ -5,7 +5,7 @@ import { barPosition, buildRelationships, buildTree, collapseCompleted, computeR
 const observed = '2026-09-06T12:00:00Z';
 const created = '2026-06-01T12:00:00Z';
 const record = (key: string, parent = '', extra: Record<string, unknown> = {}) => ({
-  app: 'jira-exporter', instance: 'test', environment: 'dev', issue_key: key,
+  app: 'jira-test-data', instance: 'test', environment: 'dev', issue_key: key,
   project_key: key.split('-')[0], parent_key: parent, summary: `Ticket ${key}`,
   is_resolved: false, created_at: created, sync_ts: observed, ...extra,
 });
@@ -18,7 +18,7 @@ const table = (rows: Record<string, unknown>[]): DataFrame => ({
 } as DataFrame);
 const issues = (rows: Record<string, unknown>[]) => readIssues([logs(rows)], 10000).issues;
 
-describe('heartbeat data contract', () => {
+describe('issue observation data contract', () => {
   it('reads both native VictoriaLogs frames and flat tables', () => {
     const rows = [record('OPS-1'), record('OPS-2')];
     expect(readIssues([logs(rows)], 100)).toEqual(readIssues([table(rows)], 100));

@@ -206,7 +206,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const ticks = Array.from({ length: 5 }, (_, i) => range[0] + (range[1] - range[0]) * i / 4);
   const warnings = [
     parsed.truncated ? `Partial result: limited to ${maxIssues.toLocaleString()} issues. Narrow the query; parents or children may be missing.` : '',
-    parsed.invalid ? `${parsed.invalid} invalid row(s) excluded. Required: issue_key, created_at, observation time, is_resolved, and resolved_at when resolved. Use the enriched exporter.` : '',
+    parsed.invalid ? `${parsed.invalid} invalid row(s) excluded. Required: issue_key, created_at, observation time, is_resolved, and resolved_at when resolved.` : '',
     stats.warnings ? `${stats.warnings} missing or cyclic parent relationship(s); affected tickets remain visible.` : '',
     sourceCount > 1 ? `${sourceCount} source namespaces; relationships are isolated per source. Jira links use the configured base URL.` : '',
   ].filter(Boolean);
@@ -342,7 +342,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
         </div>
         {!selection.rows.length && <div className={styles.empty}>
           <strong>{data.state === 'Loading' ? 'Loading Jira tickets...' : 'No matching tickets'}</strong>
-          <p>{!parsed.issues.length ? 'Query enriched issue_state heartbeats as a table or VictoriaLogs logs frame. Check the observation lookback and exporter version.'
+          <p>{!parsed.issues.length ? 'Query complete issue observations as a table or VictoriaLogs logs frame. Check the observation lookback and required fields.'
             : root && !selection.scopedCount ? `Parent ${root} is not in the result. Clear Parent to browse all trees; include the parent and every child project in the query.`
               : 'Clear search or project filters to see tickets.'}</p>
         </div>}

@@ -21,7 +21,7 @@ try {
   const now = Date.now();
   const hour = 60 * 60 * 1000;
   const daysAgo = (days) => new Date(now - days * 24 * hour).toISOString();
-  const source = { app: 'jira-exporter', instance: 'demo', environment: 'development' };
+  const source = { app: 'jira-panel-fixture', instance: 'demo', environment: 'development' };
   const issues = [];
   const nextKey = { PM: 1000, OPS: 1000, REL: 1000 };
 
@@ -155,7 +155,7 @@ try {
     }
     console.log(`Seeded ${issues.length} issues in ${rows.length} observations into ${base.origin}.`);
     console.log('Roots: PM-100 (61 descendants), PM-200 (9 descendants), PM-300 (3756 descendants).');
-    console.log('Includes missing parents, stale heartbeats, a reopened issue, older revisions, an exact duplicate, and multi-child relationships.');
+    console.log('Includes missing parents, stale observations, a reopened issue, older revisions, an exact duplicate, and multi-child relationships.');
   }
 } catch (error) {
   console.error(`Development seed failed: ${error.message}`);

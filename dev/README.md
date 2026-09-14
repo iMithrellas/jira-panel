@@ -5,16 +5,16 @@ must remain bound to loopback. Never expose this stack through a reverse proxy,
 tunnel, or public interface. Any local user can administer it.**
 
 This is a separate Compose project, `jira-panel-dev`, with its own default network
-and named volumes. It has only Grafana and VictoriaLogs: no exporter, Jira access,
-external datasources, shared storage, repository `.env`, or secret mounts. The
+and named volumes. It has only Grafana and VictoriaLogs: no Jira access, external
+datasources, shared storage, repository `.env`, or secret mounts. The
 only expected external connection is downloading the pinned signed datasource
 plugin at initial Grafana startup. Images must also be available locally or pulled.
 Restart policies are disabled.
 
 ## Commands
 
-Run from `grafana-panel/` after the main build has produced `dist/plugin.json` and
-the plugin bundle. These commands are intentionally explicit about the Compose
+Run from the repository root after the main build has produced `dist/plugin.json`
+and the plugin bundle. These commands are intentionally explicit about the Compose
 file, project name, and empty environment file. Do not combine with the repository
 root Compose file. Do not source the repository `.env`.
 
@@ -76,7 +76,7 @@ and seed again. Nothing in this directory starts or restarts the repository stac
 
 The dependency-free Node 22 script uses native `fetch` to post batches of 500
 NDJSON observations to `/insert/jsonline`. All records use stream fields
-`app=jira-exporter`, `instance=demo`, `environment=development`. All names and
+`app=jira-panel-fixture`, `instance=demo`, `environment=development`. All names and
 summaries are synthetic; Jira links use the reserved `jira.example.invalid` domain.
 
 - `PM-100`: 6 epics, 36 stories, 18 subtasks, and a reopened bug. Stories and subtasks span PM, OPS, and REL projects.
@@ -89,11 +89,11 @@ summaries are synthetic; Jira links use the reserved `jira.example.invalid` doma
 - PM-100 includes synthetic `blocks` and `clones` relationships; the first two multi-child workstreams also have `blocks`, `relates to`, `duplicates`, and `clones` links for arrow routing.
 
 Keys, relationships, status choices, and relative dates are deterministic. Each
-run captures one current clock anchor; normal heartbeats are one minute old and
+run captures one current clock anchor; normal observations are one minute old and
 creation dates span the 180-day timeline. Re-running appends observations, not
 new issue identities. Latest-per-source-and-ticket selection deduplicates them.
 Fresh data eventually becomes stale without re-seeding; there is no background
-exporter. Use a clean volume for exact reproducibility across runs separated by
+data producer. Use a clean volume for exact reproducibility across runs separated by
 days, since a previously fresh observation may then outrank an intentionally old
 fixture revision.
 
@@ -111,7 +111,7 @@ panel contract: `rootKey=PM-100`, `initialDepth=2`, `staleHours=24`,
 `jiraBaseUrl=https://jira.example.invalid`, `maxIssues=10000`, `rowHeight=36`,
 `labelWidth=420`.
 
-Each heartbeat has these fields:
+Each observation has these fields:
 
 | Field | Seed representation / meaning |
 | --- | --- |
@@ -132,7 +132,7 @@ The insertion request also supplies `_msg` as a copy of `summary`, leaving the
 mandatory `summary` field intact. The query retains all contract fields:
 
 ```text
-{app="jira-exporter", instance="demo", environment="development"} kind:="issue_state"
+{app="jira-panel-fixture", instance="demo", environment="development"} kind:="issue_state"
 | stats by (app, instance, environment, issue_key) row_max(_time) as row
 | unpack_json from row
 | fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee

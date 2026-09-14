@@ -62,7 +62,7 @@ test('loads real VictoriaLogs results, expands parents and shows observed end de
   await page.getByRole('button', { name: 'Focus subtree', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Parent ticket', exact: true })).toHaveValue('OPS-900003');
   await expect(page.getByTestId('jira-row')).toHaveCount(1);
-  await expect(page.getByText('Source: jira-exporter / demo / development', { exact: true })).toBeVisible();
+  await expect(page.getByText('Source: jira-panel-fixture / demo / development', { exact: true })).toBeVisible();
 });
 
 test('exports the filtered hierarchy as CSV and JSON', async ({ page }) => {

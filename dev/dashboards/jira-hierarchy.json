@@ -16,7 +16,7 @@
       "id": 1,
       "type": "easit-jira-panel",
       "title": "Jira Hierarchy",
-      "description": "Latest heartbeat per source and issue, including cross-project descendants. A 10,001st row is retained as the maxIssues=10,000 warning sentinel.",
+      "description": "Latest observation per source and issue, including cross-project descendants. A 10,001st row is retained as the maxIssues=10,000 warning sentinel.",
       "gridPos": { "h": 24, "w": 24, "x": 0, "y": 0 },
       "timeFrom": "30d",
       "datasource": {
@@ -33,7 +33,7 @@
           "editorMode": "code",
           "queryType": "instant",
           "maxLines": 10001,
-          "expr": "{app=\"jira-exporter\", instance=\"demo\", environment=\"development\"} kind:=\"issue_state\" | stats by (app, instance, environment, issue_key) row_max(_time) as row | unpack_json from row | fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee | sort by (issue_key) | limit 10001"
+          "expr": "{app=\"jira-panel-fixture\", instance=\"demo\", environment=\"development\"} kind:=\"issue_state\" | stats by (app, instance, environment, issue_key) row_max(_time) as row | unpack_json from row | fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee | sort by (issue_key) | limit 10001"
         }
       ],
       "transformations": [

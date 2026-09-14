@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "panel",
+  "name": "Jira Hierarchy",
+  "id": "easit-jira-panel",
+  "info": {
+    "description": "Explore Jira parent trees and observed ticket lifetimes, with virtualized rows and cross-project navigation.",
+    "author": {
+      "name": "Easit"
+    },
+    "keywords": [
+      "jira",
+      "hierarchy",
+      "gantt",
+      "timeline",
+      "victorialogs"
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "version": "0.1.0+63b4150c6545",
+    "updated": "2026-09-10",
+    "screenshots": [],
+    "links": []
+  },
+  "dependencies": {
+    "grafanaDependency": ">=13.0.0",
+    "plugins": []
+  }
+}
