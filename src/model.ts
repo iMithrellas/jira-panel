@@ -1,5 +1,5 @@
 import type { DataFrame } from '@grafana/data';
-import type { Issue, IssueLink, IssueNode, Relationship, Rollup, TreeRow } from './types';
+import type { Issue, IssueLink, IssueNode, Relationship, Rollup, SearchField, TreeRow } from './types';
 
 function timestamp(value: unknown): number {
   if (typeof value === 'number') {
@@ -203,7 +203,7 @@ export function buildRelationships(tree: ReturnType<typeof buildTree>, rows: Tre
 
 export function selectRows(
   tree: ReturnType<typeof buildTree>, rootKey: string, search: string, projects: string[],
-  expansion: Map<string, boolean>, initialDepth: number, rootSource?: string
+  expansion: Map<string, boolean>, initialDepth: number, rootSource?: string, searchField: SearchField = 'all'
 ) {
   const roots = rootIDs(tree, rootKey, rootSource);
   const scoped: Array<{ id: string; depth: number }> = [];
@@ -220,8 +220,9 @@ export function selectRows(
   const included = new Set<string>();
   for (const { id } of scoped) {
     const issue = tree.nodes.get(id)!.issue;
+    const searchable = searchField === 'all' ? [issue.key, issue.summary, issue.status, issue.assignee, issue.type] : [issue[searchField]];
     if ((!projects.length || projects.includes(issue.project)) &&
-      (!query || [issue.key, issue.summary, issue.status, issue.assignee, issue.type].some((s) => s.toLowerCase().includes(query)))) {
+      (!query || searchable.some((s) => s.toLowerCase().includes(query)))) {
       matches.add(id);
       included.add(id);
     }

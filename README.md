@@ -9,7 +9,7 @@ older root-level Grafana 11 demo is not the plugin development environment.
 
 - Parent-subtree focus or all-project browsing, including cross-project descendants.
 - Expand/collapse and virtualized fixed-height rows. Only visible rows plus overscan are mounted.
-- Search by key, summary, assignee, status or issue type. Multi-project filters retain ancestor context.
+- Search by key, summary, assignee, status or issue type, with an `All fields` default and a field selector. Multi-project filters retain ancestor context.
 - Creation-to-resolution bars for resolved tickets; creation-to-last-observation bars for open tickets.
 - Descendant rollups on parent rows: child count, resolved child count, and stale child count.
 - Colored routed directional arrows anchored to issue bars, with boxed labels for Jira links such as `blocks`, `clones`, `duplicates`, `relates to`, and custom link types.

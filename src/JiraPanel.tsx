@@ -3,10 +3,19 @@ import { dateTimeFormat, type GrafanaTheme2, type PanelProps } from '@grafana/da
 import { useStyles2, useTheme2 } from '@grafana/ui';
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
-import { defaults, type Issue, type JiraOptions } from './types';
+import { defaults, type Issue, type JiraOptions, type SearchField } from './types';
 
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
   Number.isFinite(value) ? Math.max(min, Math.min(max, Number(value))) : fallback;
+
+const searchFieldOptions: Array<{ value: SearchField; label: string }> = [
+  { value: 'all', label: 'All fields' },
+  { value: 'key', label: 'Key' },
+  { value: 'summary', label: 'Summary' },
+  { value: 'status', label: 'Status' },
+  { value: 'assignee', label: 'Assignee' },
+  { value: 'type', label: 'Issue type' },
+];
 
 export function JiraPanel({ data, options, width, height, timeZone, replaceVariables }: PanelProps<JiraOptions>) {
   const theme = useTheme2();
@@ -15,6 +24,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const [root, setRoot] = useState(configuredRoot);
   const [rootSource, setRootSource] = useState<string>();
   const [search, setSearch] = useState('');
+  const [searchField, setSearchField] = useState<SearchField>('all');
   const deferredSearch = useDeferredValue(search);
   const [projects, setProjects] = useState<string[]>([]);
   const [expansion, setExpansion] = useState(new Map<string, boolean>());
@@ -37,8 +47,8 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const parsed = useMemo(() => readIssues(data.series, maxIssues), [data.series, maxIssues]);
   const tree = useMemo(() => buildTree(parsed.issues), [parsed.issues]);
   const rollups = useMemo(() => computeRollups(tree, clock, staleMs), [tree, clock, staleMs]);
-  const selection = useMemo(() => selectRows(tree, root, deferredSearch, projects, expansion, initialDepth, rootSource),
-    [tree, root, deferredSearch, projects, expansion, initialDepth, rootSource]);
+  const selection = useMemo(() => selectRows(tree, root, deferredSearch, projects, expansion, initialDepth, rootSource, searchField),
+    [tree, root, deferredSearch, projects, expansion, initialDepth, rootSource, searchField]);
   const availableProjects = useMemo(() => [...new Set(parsed.issues.map((issue) => issue.project))].filter(Boolean).sort(), [parsed.issues]);
   const sourceCount = useMemo(() => new Set(parsed.issues.map((issue) => issue.source)).size, [parsed.issues]);
   const fittedRange = useMemo(() => fitRange(selection.issues), [selection.issues]);
@@ -80,7 +90,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     if (viewport.current) { viewport.current.scrollTop = 0; }
     setScroll((previous) => ({ ...previous, top: 0 }));
     setMatchCursor(0);
-  }, [root, rootSource, deferredSearch, projects]);
+  }, [root, rootSource, deferredSearch, projects, searchField]);
   useEffect(() => {
     const element = viewport.current;
     if (!element) { return; }
@@ -209,7 +219,12 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
         <label className={styles.rootLabel}>Parent
           <input aria-label="Parent ticket" placeholder="All ticket trees" value={root} onChange={(event) => { setRoot(event.target.value); setRootSource(undefined); }} />
         </label>
-        <input className={styles.search} aria-label="Search tickets" placeholder="Search key, summary, assignee, status..." value={search} onChange={(event) => setSearch(event.target.value)} />
+        <label className={styles.searchField}>Search in
+          <select aria-label="Search field" value={searchField} onChange={(event) => setSearchField(event.target.value as SearchField)}>
+            {searchFieldOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <input className={styles.search} aria-label="Search tickets" placeholder={searchField === 'all' ? 'Search all fields...' : `Search ${searchFieldOptions.find((option) => option.value === searchField)?.label.toLowerCase()}...`} value={search} onChange={(event) => setSearch(event.target.value)} />
         <details className={styles.projects}>
           <summary>Projects {projects.length ? `(${projects.length})` : '(all)'}</summary>
           <div className={styles.projectMenu}>
@@ -373,10 +388,11 @@ function getStyles(theme: GrafanaTheme2) {
       '& button:disabled': { cursor: 'default', opacity: 0.4 },
       '& button:focus-visible, & input:focus-visible, & summary:focus-visible, & a:focus-visible': { outline: `2px solid ${theme.colors.primary.main}`, outlineOffset: -2 },
       '& button': { border: `1px solid ${border}`, borderRadius: 4, padding: '4px 8px', color: theme.colors.text.primary, background: theme.colors.background.secondary },
-      '& input:not([type=checkbox])': { border: `1px solid ${border}`, background: theme.colors.background.primary, color: theme.colors.text.primary, borderRadius: 4, padding: '6px 8px', minWidth: 0 },
+      '& input:not([type=checkbox]), & select': { border: `1px solid ${border}`, background: theme.colors.background.primary, color: theme.colors.text.primary, borderRadius: 4, padding: '6px 8px', minWidth: 0 },
     }),
     toolbar: css({ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '8px 8px 4px', alignItems: 'center', flexShrink: 0 }),
     rootLabel: css({ display: 'flex', alignItems: 'center', gap: 8, '& input': { width: 130 } }),
+    searchField: css({ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', flexShrink: 0, '& select': { width: 112, height: 28, boxSizing: 'border-box' } }),
     search: css({ flex: '1 1 210px' }),
     matchNav: css({ display: 'inline-flex', alignItems: 'center', gap: 4, color: theme.colors.text.secondary, whiteSpace: 'nowrap', '& button': { padding: '4px 7px' } }),
     projects: css({ position: 'relative', '& summary': { padding: 6 } }),

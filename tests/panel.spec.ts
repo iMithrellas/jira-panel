@@ -91,6 +91,17 @@ test('exports the filtered hierarchy as CSV and JSON', async ({ page }) => {
   expect(records.some((record) => record.project_key === 'REL')).toBe(true);
 });
 
+test('searches only the selected issue field', async ({ page }) => {
+  const field = page.getByRole('combobox', { name: 'Search field' });
+  const search = page.getByRole('textbox', { name: 'Search tickets' });
+  await field.selectOption('key');
+  await search.fill('Demo reopened issue');
+  await expect(page.getByTestId('issue-count')).toContainText('0 tickets / 0 rows');
+  await field.selectOption('summary');
+  await expect(page.getByTestId('issue-count')).toContainText('1 tickets / 2 rows');
+  await expect(page.getByRole('treegrid')).toContainText('Demo reopened issue');
+});
+
 test('virtualizes thousands of rows, scrolls to the end, and keeps matching ancestors', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Parent ticket', exact: true }).fill('PM-300');
   await expect(page.getByTestId('issue-count')).toContainText('3,757 tickets');

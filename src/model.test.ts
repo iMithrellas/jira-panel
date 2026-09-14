@@ -94,6 +94,14 @@ describe('real parent hierarchy', () => {
     expect(result.rows.map((r) => [r.node.issue.key, r.context])).toEqual([['PM-1', true], ['OPS-1', true], ['REL-1', false]]);
   });
 
+  it('restricts search matches to the selected field', () => {
+    const fieldTree = buildTree(issues([record('OPS-1', '', { summary: 'Customer outage', status: 'Open' })]));
+    expect(selectRows(fieldTree, '', 'OPS-1', [], new Map(), 2, undefined, 'key').matchingCount).toBe(1);
+    expect(selectRows(fieldTree, '', 'Customer outage', [], new Map(), 2, undefined, 'key').matchingCount).toBe(0);
+    expect(selectRows(fieldTree, '', 'Customer outage', [], new Map(), 2, undefined, 'summary').matchingCount).toBe(1);
+    expect(selectRows(fieldTree, '', 'Open', [], new Map(), 2, undefined, 'status').matchingCount).toBe(1);
+  });
+
   it('collapses descendants without changing fitted extents or matched count', () => {
     const result = select('PM-1', '', [], 0);
     expect(result.rows).toHaveLength(1);

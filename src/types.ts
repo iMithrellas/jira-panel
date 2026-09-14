@@ -8,6 +8,8 @@ export interface JiraOptions {
   labelWidth: number;
 }
 
+export type SearchField = 'all' | 'key' | 'summary' | 'status' | 'assignee' | 'type';
+
 export const defaults: JiraOptions = {
   rootKey: '', initialDepth: 2, staleHours: 24, jiraBaseUrl: '',
   maxIssues: 10000, rowHeight: 36, labelWidth: 420,
