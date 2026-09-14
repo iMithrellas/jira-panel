@@ -1,0 +1,57 @@
+# DEVELOPMENT ONLY: anonymous viewing and a fixed local admin. Keep BOTH port bindings
+# on loopback. Never expose this stack via a proxy, tunnel, or public interface.
+# Use --env-file /dev/null and -p jira-panel-dev (see dev/README.md).
+name: jira-panel-dev
+
+services:
+  grafana:
+    image: grafana/grafana:13.0.1
+    restart: "no"
+    ports:
+      - "127.0.0.1:${PANEL_GRAFANA_PORT:-3300}:3000"
+    environment:
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: easit-jira-panel
+      GF_PLUGINS_PREINSTALL: victoriametrics-logs-datasource@0.26.3
+      GF_PLUGINS_PREINSTALL_ASYNC: "false"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_PLUGINS_DISABLE_PLUGINS: grafana-lokiexplore-app,grafana-pyroscope-app,grafana-exploretraces-app,grafana-metricsdrilldown-app,elasticsearch,grafana-advisor-app,grafana-pathfinder-app
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_NAME: Main Org.
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_AUTH_BASIC_ENABLED: "true"
+      # Deliberately literal development-only values, NOT host/repository secrets.
+      GF_SECURITY_ADMIN_USER: jira-panel-dev
+      GF_SECURITY_ADMIN_PASSWORD: jira-panel-development-only
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./dist:/var/lib/grafana/plugins/easit-jira-panel:ro
+      - ./dev/provisioning:/etc/grafana/provisioning:ro
+      - ./dev/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - victorialogs
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.51.1
+    restart: "no"
+    ports:
+      - "127.0.0.1:${PANEL_LOGS_PORT:-19428}:9428"
+    command:
+      - -storageDataPath=/victoria-logs-data
+      - -retentionPeriod=60d
+    volumes:
+      - logs-data:/victoria-logs-data
+
+volumes:
+  grafana-data:
+  logs-data:

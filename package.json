@@ -1,0 +1,38 @@
+{
+  "name": "easit-jira-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Virtualized Jira parent hierarchy and observed lifetime timeline for Grafana",
+  "scripts": {
+    "build": "tsc --noEmit && webpack --mode production",
+    "dev": "webpack --mode development --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "seed": "node dev/seed.mjs"
+  },
+  "engines": { "node": ">=22" },
+  "packageManager": "pnpm@11.26.0",
+  "overrides": {
+    "react-data-grid": "7.0.0-beta.61"
+  },
+  "devDependencies": {
+    "@emotion/css": "11.13.5",
+    "@grafana/data": "13.0.1",
+    "@grafana/runtime": "13.0.1",
+    "@grafana/ui": "13.0.1",
+    "@playwright/test": "1.63.0",
+    "@types/node": "22.19.15",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "18.3.7",
+    "copy-webpack-plugin": "14.0.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "ts-loader": "9.5.4",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "webpack": "5.110.3",
+    "webpack-cli": "6.0.1"
+  }
+}

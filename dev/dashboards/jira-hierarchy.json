@@ -1,0 +1,57 @@
+{
+  "uid": "jira-hierarchy-dev",
+  "title": "Jira Hierarchy - Development",
+  "description": "Synthetic data only. Observations use a 30-day lookback; the timeline fits the fetched tickets' full lifetimes. Enter PM-200 or PM-300 in the panel's Parent control for alternate trees. UI changes are not persisted over provisioning updates.",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "tags": ["development", "synthetic", "jira-panel"],
+  "time": { "from": "now-180d", "to": "now" },
+  "refresh": "",
+  "annotations": { "list": [] },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "easit-jira-panel",
+      "title": "Jira Hierarchy",
+      "description": "Latest heartbeat per source and issue, including cross-project descendants. A 10,001st row is retained as the maxIssues=10,000 warning sentinel.",
+      "gridPos": { "h": 24, "w": 24, "x": 0, "y": 0 },
+      "timeFrom": "30d",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "jira-dev-logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "victoriametrics-logs-datasource",
+            "uid": "jira-dev-logs"
+          },
+          "editorMode": "code",
+          "queryType": "instant",
+          "maxLines": 10001,
+          "expr": "{app=\"jira-exporter\", instance=\"demo\", environment=\"development\"} kind:=\"issue_state\" | stats by (app, instance, environment, issue_key) row_max(_time) as row | unpack_json from row | fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, created_at, resolved_at, is_resolved, status, status_category, priority, assignee | sort by (issue_key) | limit 10001"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": { "format": "json", "replace": true, "source": "labels" }
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "rootKey": "PM-100",
+        "initialDepth": 2,
+        "staleHours": 24,
+        "jiraBaseUrl": "https://jira.example.invalid",
+        "maxIssues": 10000,
+        "rowHeight": 36,
+        "labelWidth": 420
+      }
+    }
+  ]
+}

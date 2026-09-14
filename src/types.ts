@@ -1,0 +1,47 @@
+export interface JiraOptions {
+  rootKey: string;
+  initialDepth: number;
+  staleHours: number;
+  jiraBaseUrl: string;
+  maxIssues: number;
+  rowHeight: number;
+  labelWidth: number;
+}
+
+export const defaults: JiraOptions = {
+  rootKey: '', initialDepth: 2, staleHours: 24, jiraBaseUrl: '',
+  maxIssues: 10000, rowHeight: 36, labelWidth: 420,
+};
+
+export interface Issue {
+  id: string;
+  source: string;
+  key: string;
+  parentKey: string;
+  project: string;
+  summary: string;
+  type: string;
+  status: string;
+  category: string;
+  assignee: string;
+  priority: string;
+  start: number;
+  end: number;
+  observed: number;
+  resolved: boolean;
+}
+
+export interface IssueNode {
+  issue: Issue;
+  parent?: string;
+  children: string[];
+  warning?: string;
+}
+
+export interface TreeRow {
+  node: IssueNode;
+  depth: number;
+  expanded: boolean;
+  hasChildren: boolean;
+  context: boolean;
+}
