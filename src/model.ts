@@ -1,5 +1,5 @@
 import type { DataFrame } from '@grafana/data';
-import type { Issue, IssueNode, Rollup, TreeRow } from './types';
+import type { Issue, IssueLink, IssueNode, Relationship, Rollup, TreeRow } from './types';
 
 function timestamp(value: unknown): number {
   if (typeof value === 'number') {
@@ -13,6 +13,24 @@ function object(value: unknown): Record<string, unknown> {
     try { value = JSON.parse(value); } catch { return {}; }
   }
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function array(value: unknown): unknown[] {
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return []; }
+  }
+  return Array.isArray(value) ? value : [];
+}
+
+function readLinks(value: unknown): IssueLink[] {
+  return array(value).flatMap((entry) => {
+    const link = object(entry);
+    const direction = link.direction === 'inward' ? 'inward' : link.direction === 'outward' ? 'outward' : undefined;
+    const targetKey = String(link.target_key ?? link.targetKey ?? '').trim();
+    const type = String(link.type ?? '').trim();
+    if (!direction || !targetKey || !type) { return []; }
+    return [{ targetKey, type, display: String(link.display ?? type), direction }];
+  });
 }
 
 // Accept VictoriaLogs' native logs frames (a labels object per row) and flat tables.
@@ -57,6 +75,7 @@ export function readIssues(frames: DataFrame[], maxIssues: number) {
       project: text('project_key'), summary: text('summary'), type: text('issue_type'),
       status: text('status'), category: text('status_category'), assignee: text('assignee'),
       priority: text('priority'), start, end, observed: Number(row.observed), resolved,
+      links: readLinks(row.issue_links),
     });
   }
   issues.sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }) || a.source.localeCompare(b.source));
@@ -160,6 +179,28 @@ export function collapseCompleted(tree: ReturnType<typeof buildTree>, rollups: M
   return expansion;
 }
 
+export function buildRelationships(tree: ReturnType<typeof buildTree>, rows: TreeRow[]): Relationship[] {
+  const rowIndex = new Map(rows.map((row, index) => [row.node.issue.id, index]));
+  const relationships: Relationship[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const issue = row.node.issue;
+    for (const link of issue.links) {
+      const targetID = JSON.stringify([issue.source, link.targetKey]);
+      const target = tree.nodes.get(targetID);
+      if (!target) { continue; }
+      const fromId = link.direction === 'outward' ? issue.id : targetID;
+      const toId = link.direction === 'outward' ? targetID : issue.id;
+      if (!rowIndex.has(fromId) || !rowIndex.has(toId)) { continue; }
+      const edge = [fromId, toId].sort().join('|') + `|${link.type}`;
+      if (seen.has(edge)) { continue; }
+      seen.add(edge);
+      relationships.push({ fromId, toId, fromRow: rowIndex.get(fromId)!, toRow: rowIndex.get(toId)!, label: link.type || link.display });
+    }
+  }
+  return relationships;
+}
+
 export function selectRows(
   tree: ReturnType<typeof buildTree>, rootKey: string, search: string, projects: string[],
   expansion: Map<string, boolean>, initialDepth: number, rootSource?: string
@@ -231,6 +272,7 @@ export function exportRecords(rows: Array<{ node: IssueNode; depth: number }>, r
       child_done_count: rollup.doneDescendants,
       child_stale_count: rollup.staleDescendants,
       source: node.issue.source,
+      links: node.issue.links.map((link) => ({ ...link })),
     };
   });
 }

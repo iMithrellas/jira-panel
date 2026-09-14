@@ -1,6 +1,6 @@
 import type { DataFrame } from '@grafana/data';
 import { describe, expect, it } from 'vitest';
-import { barPosition, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
+import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
 
 const observed = '2026-09-06T12:00:00Z';
 const created = '2026-06-01T12:00:00Z';
@@ -172,9 +172,19 @@ describe('real parent hierarchy', () => {
     const records = exportRecords(selected.exportRows, computeRollups(tree, Date.now(), 3600000));
     expect(records).toHaveLength(2);
     expect(records[0]).toMatchObject({ issue_key: 'PM-1', child_count: 1, depth: 0 });
-    expect(records[1]).toMatchObject({ issue_key: 'OPS-1', parent_key: 'PM-1', depth: 1 });
+    expect(records[1]).toMatchObject({ issue_key: 'OPS-1', parent_key: 'PM-1', depth: 1, links: [] });
     expect(recordsToCsv(records)).toContain('"A, ""quoted"" summary"');
     expect(recordsToCsv([])).toBe('');
+  });
+
+  it('deduplicates inward and outward Jira link representations into one directed edge', () => {
+    const data = issues([
+      record('OPS-1', '', { issue_links: [{ target_key: 'OPS-2', type: 'blocks', display: 'blocks', direction: 'outward' }] }),
+      record('OPS-2', '', { issue_links: [{ target_key: 'OPS-1', type: 'blocks', display: 'is blocked by', direction: 'inward' }] }),
+    ]);
+    const tree = buildTree(data);
+    const rows = selectRows(tree, '', '', [], new Map(), 2).rows;
+    expect(buildRelationships(tree, rows)).toEqual([{ fromId: data[0].id, toId: data[1].id, fromRow: 0, toRow: 1, label: 'blocks' }]);
   });
 });
 

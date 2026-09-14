@@ -1,8 +1,8 @@
 import { css } from '@emotion/css';
 import { dateTimeFormat, type GrafanaTheme2, type PanelProps } from '@grafana/data';
 import { useStyles2, useTheme2 } from '@grafana/ui';
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { barPosition, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
+import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
 import { defaults, type Issue, type JiraOptions } from './types';
 
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
@@ -20,10 +20,13 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const [expansion, setExpansion] = useState(new Map<string, boolean>());
   const [rangeOverride, setRangeOverride] = useState<[number, number]>();
   const [selectedID, setSelectedID] = useState<string>();
+  const [hoveredRelationship, setHoveredRelationship] = useState<string>();
+  const [showRelationships, setShowRelationships] = useState(true);
   const [matchCursor, setMatchCursor] = useState(0);
   const [clock, setClock] = useState(Date.now());
   const [scroll, setScroll] = useState({ top: 0, left: 0, height: 400 });
   const viewport = useRef<HTMLDivElement>(null);
+  const arrowMarkerId = `jira-arrow-${useId().replaceAll(':', '')}`;
   const rowHeight = Math.round(clamp(options.rowHeight, defaults.rowHeight, 30, 60));
   const maxIssues = Math.round(clamp(options.maxIssues, defaults.maxIssues, 1, 50000));
   const initialDepth = Math.round(clamp(options.initialDepth, defaults.initialDepth, 0, 20));
@@ -47,6 +50,11 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const windowSize = Math.ceil(scroll.height / rowHeight) + 12;
   const first = Math.max(0, Math.min(Math.floor(scroll.top / rowHeight) - 6, selection.rows.length - windowSize));
   const visibleRows = selection.rows.slice(first, first + windowSize);
+  const relationships = useMemo(() => buildRelationships(tree, selection.rows), [tree, selection.rows]);
+  const relationshipStart = Math.max(0, first - 6);
+  const relationshipEnd = first + windowSize + 6;
+  const visibleRelationships = relationships.filter((relationship) =>
+    Math.max(relationship.fromRow, relationship.toRow) >= relationshipStart && Math.min(relationship.fromRow, relationship.toRow) <= relationshipEnd);
   const stats = useMemo(() => {
     let stale = 0;
     let lastSeen = 0;
@@ -84,6 +92,9 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     const interval = setInterval(() => setClock(Date.now()), 60000);
     return () => clearInterval(interval);
   }, []);
+  useEffect(() => {
+    if (!showRelationships) { setHoveredRelationship(undefined); }
+  }, [showRelationships]);
 
   const format = (value: number, short = false) => dateTimeFormat(value, {
     timeZone, format: short ? (range[1] - range[0] < 3 * 86400000 ? 'MMM D HH:mm' : 'MMM D, YYYY') : 'YYYY-MM-DD HH:mm:ss',
@@ -92,6 +103,62 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     : issue.category === 'indeterminate' ? theme.colors.info.main
       : issue.category === 'new' ? theme.colors.text.secondary : theme.colors.warning.main;
   const duration = (issue: Issue) => `${((issue.end - issue.start) / 86400000).toLocaleString(undefined, { maximumFractionDigits: 1 })}d`;
+  const relationshipBranches = new Map<string, number>();
+  const relationshipVisuals = visibleRelationships.flatMap((relationship, index) => {
+    const fromIssue = tree.nodes.get(relationship.fromId)?.issue;
+    const toIssue = tree.nodes.get(relationship.toId)?.issue;
+    const fromPosition = fromIssue && barPosition(fromIssue.start, fromIssue.end, range);
+    const toPosition = toIssue && barPosition(toIssue.start, toIssue.end, range);
+    if (!fromIssue || !toIssue || !fromPosition || !toPosition) { return []; }
+
+    const branch = relationshipBranches.get(relationship.fromId) ?? 0;
+    relationshipBranches.set(relationship.fromId, branch + 1);
+    const sourceLeft = labelWidth + fromPosition.left / 100 * timelineWidth;
+    const targetLeft = labelWidth + toPosition.left / 100 * timelineWidth;
+    const startX = sourceLeft + branch * 16;
+    const laneX = Math.min(startX, targetLeft - 28);
+    const endX = targetLeft;
+    const startY = relationship.fromRow * rowHeight + rowHeight * 0.78;
+    const endY = relationship.toRow * rowHeight + rowHeight / 2;
+    const corner = 8;
+    const verticalEnd = endY >= startY ? endY - corner : endY + corner;
+    const points: Array<[number, number]> = [[startX, startY], [laneX, startY], [laneX, verticalEnd], [laneX + corner, endY], [endX, endY]];
+    const badgeWidth = Math.max(42, relationship.label.length * 5.8 + 14);
+    const labelX = Math.max(labelWidth + badgeWidth / 2 + 6, endX - badgeWidth / 2 - 10);
+    const labelY = (startY + endY) / 2 - 9;
+    const relationshipID = `${relationship.fromId}-${relationship.toId}-${relationship.label}`;
+    const path = `M ${startX} ${startY} H ${laneX} V ${verticalEnd} Q ${laneX} ${endY} ${laneX + corner} ${endY} H ${endX}`;
+    return [{
+      ...relationship,
+      id: relationshipID,
+      color: color(toIssue),
+      markerId: `${arrowMarkerId}-${index}`,
+      points,
+      path,
+      labelX,
+      labelY,
+      labelWidth: badgeWidth,
+    }];
+  });
+  const handleViewportMouseMove = (event: MouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left + event.currentTarget.scrollLeft;
+    const y = event.clientY - rect.top + event.currentTarget.scrollTop;
+    let closest: { id: string; distance: number } | undefined;
+    for (const relationship of relationshipVisuals) {
+      for (let pointIndex = 1; pointIndex < relationship.points.length; pointIndex++) {
+        const [previousX, previousY] = relationship.points[pointIndex - 1];
+        const [pointX, pointY] = relationship.points[pointIndex];
+        const segmentX = pointX - previousX;
+        const segmentY = pointY - previousY;
+        const segmentLength = segmentX ** 2 + segmentY ** 2;
+        const projection = segmentLength ? Math.max(0, Math.min(1, ((x - previousX) * segmentX + (y - previousY) * segmentY) / segmentLength)) : 0;
+        const distance = Math.hypot(x - (previousX + projection * segmentX), y - (previousY + projection * segmentY));
+        if (distance <= 10 && (!closest || distance < closest.distance)) { closest = { id: relationship.id, distance }; }
+      }
+    }
+    setHoveredRelationship(closest?.id);
+  };
   const toggle = (id: string, expanded: boolean) => setExpansion((previous) => new Map(previous).set(id, !expanded));
   const expandThroughDepth = () => setExpansion(expansionForDepth(tree, root, Math.round(clamp(depthControl, initialDepth, 0, 100)), rootSource));
   const collapseFinished = () => setExpansion(collapseCompleted(tree, rollups));
@@ -169,6 +236,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
           </label>
           <button type="button" disabled={selection.filtering} onClick={expandThroughDepth}>Expand to depth</button>
           <button type="button" disabled={selection.filtering} onClick={collapseFinished}>Collapse completed</button>
+          <button type="button" aria-pressed={!showRelationships} onClick={() => setShowRelationships((visible) => !visible)}>{showRelationships ? 'Hide arrows' : 'Show arrows'}</button>
           <button type="button" aria-label="Export CSV" disabled={!selection.exportRows.length} onClick={() => download('csv')}>CSV</button>
           <button type="button" aria-label="Export JSON" disabled={!selection.exportRows.length} onClick={() => download('json')}>JSON</button>
           <span className={styles.count} data-testid="issue-count">{selection.matchingCount.toLocaleString()} tickets / {selection.rows.length.toLocaleString()} rows</span>
@@ -187,6 +255,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
             <i style={{ background: color({ category } as Issue) }} />{['To do', 'In progress', 'Done'][i]}
           </span>)}
           <span className={styles.openLegend}>Open = last observed</span>
+          {showRelationships && relationships.length > 0 && <span className={styles.relationshipLegend}><i />{relationships.length} {relationships.length === 1 ? 'dependency' : 'dependencies'}</span>}
           {rootSource && <span>Source: {JSON.parse(rootSource).filter(Boolean).join(' / ')}</span>}
         </div>
         {stats.lastSeen > 0 && <span title={`Observation range: ${format(stats.earliestSeen)} to ${format(stats.lastSeen)} (${timeZone})`}>
@@ -204,6 +273,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
         </div>
       </div>
       <div ref={viewport} className={styles.viewport} data-testid="jira-viewport" role="treegrid" aria-label="Jira tickets"
+        onMouseMove={handleViewportMouseMove} onMouseLeave={() => setHoveredRelationship(undefined)}
         aria-rowcount={selection.rows.length} aria-colcount={2}
         onScroll={(event) => setScroll({ top: event.currentTarget.scrollTop, left: event.currentTarget.scrollLeft, height: event.currentTarget.clientHeight })}>
         <div style={{ height: selection.rows.length * rowHeight, width: innerWidth, position: 'relative' }}>
@@ -238,6 +308,22 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
               </div>
             </div>;
           })}
+          {showRelationships && <svg className={styles.links} width={innerWidth} height={selection.rows.length * rowHeight} viewBox={`0 0 ${innerWidth} ${selection.rows.length * rowHeight}`} aria-hidden="true">
+            <defs>
+              {relationshipVisuals.map((relationship) => <marker key={relationship.markerId} id={relationship.markerId} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+                <path d="M0,0 L8,4 L0,8 z" fill={relationship.color} />
+              </marker>)}
+            </defs>
+            {relationshipVisuals.map((relationship) => {
+              const hovered = hoveredRelationship === relationship.id;
+              return <g className={styles.relationshipArrow} key={relationship.id} data-testid="relationship-arrow">
+                <title>{`${relationship.label}: ${tree.nodes.get(relationship.fromId)?.issue.key ?? ''} -> ${tree.nodes.get(relationship.toId)?.issue.key ?? ''}`}</title>
+                <path className={styles.linkPath} d={relationship.path} stroke={relationship.color} markerEnd={`url(#${relationship.markerId})`} />
+                <rect className={styles.linkLabelBox} style={{ opacity: hovered ? 1 : 0 }} x={relationship.labelX - relationship.labelWidth / 2} y={relationship.labelY - 9} width={relationship.labelWidth} height={18} rx={4} stroke={relationship.color} />
+                <text className={styles.linkLabel} style={{ opacity: hovered ? 1 : 0 }} x={relationship.labelX} y={relationship.labelY}>{relationship.label}</text>
+              </g>;
+            })}
+          </svg>}
         </div>
         {!selection.rows.length && <div className={styles.empty}>
           <strong>{data.state === 'Loading' ? 'Loading Jira tickets...' : 'No matching tickets'}</strong>
@@ -265,6 +351,10 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
         </dl>
         {clock - selected.observed > staleMs && <p className={styles.stale}>Stale observation. Current Jira state may differ.</p>}
         {tree.nodes.get(selected.id)?.warning && <p className={styles.stale}>{tree.nodes.get(selected.id)?.warning}</p>}
+        {selected.links.length > 0 && <div className={styles.relationships}>
+          <strong>Relationships</strong>
+          {selected.links.map((link) => <div key={`${link.direction}-${link.targetKey}-${link.type}`}><span>{link.display || link.type}</span> <code>{link.targetKey}</code></div>)}
+        </div>}
         <div className={styles.actions}>
           <button type="button" onClick={() => { setRoot(selected.key); setRootSource(selected.source); setSearch(''); setProjects([]); }}>Focus subtree</button>
           {link && <a href={link} target="_blank" rel="noopener noreferrer">Open in Jira</a>}
@@ -298,6 +388,7 @@ function getStyles(theme: GrafanaTheme2) {
     status: css({ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 6, padding: '6px 10px', fontSize: 11, color: theme.colors.text.secondary, borderTop: `1px solid ${border}` }),
     legend: css({ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, '& span': { display: 'inline-flex', alignItems: 'center', gap: 4 }, '& i': { width: 7, height: 7, borderRadius: 2 } }),
     openLegend: css({ fontStyle: 'italic' }),
+    relationshipLegend: css({ '& i': { width: 24, height: 0, borderTop: `2px solid ${theme.colors.text.secondary}`, position: 'relative', '&::after': { content: '""', position: 'absolute', right: -1, top: -4, borderTop: '3px solid transparent', borderBottom: '3px solid transparent', borderLeft: `5px solid ${theme.colors.text.secondary}` } } }),
     stale: css({ color: theme.colors.warning.text }),
     warning: css({ color: theme.colors.warning.text, background: theme.colors.warning.transparent, padding: '6px 10px', fontSize: 11, maxHeight: 64, overflow: 'auto', flexShrink: 0 }),
     axisClip: css({ overflow: 'hidden', flexShrink: 0, borderTop: `1px solid ${border}`, borderBottom: `1px solid ${border}` }),
@@ -305,6 +396,11 @@ function getStyles(theme: GrafanaTheme2) {
     axisTitle: css({ flexShrink: 0, padding: '0 12px', letterSpacing: '0.08em' }),
     ticks: css({ position: 'relative', height: '100%', '& span': { position: 'absolute', top: 10, whiteSpace: 'nowrap', padding: '0 4px' } }),
     viewport: css({ flex: '1 1 auto', minHeight: 60, overflow: 'auto', overscrollBehavior: 'contain', scrollbarGutter: 'stable' }),
+    links: css({ position: 'absolute', top: 0, left: 0, zIndex: 2, overflow: 'visible', pointerEvents: 'none' }),
+    linkPath: css({ fill: 'none', strokeWidth: 2, opacity: 0.95, pointerEvents: 'none' }),
+    relationshipArrow: css({ cursor: 'help' }),
+    linkLabelBox: css({ fill: theme.colors.background.primary, fillOpacity: 0.96, strokeWidth: 1.2, opacity: 0, transition: 'opacity 100ms ease' }),
+    linkLabel: css({ fill: theme.colors.text.primary, fontSize: 10, fontWeight: 500, textAnchor: 'middle', dominantBaseline: 'middle', opacity: 0, transition: 'opacity 100ms ease', pointerEvents: 'none' }),
     row: css({ position: 'absolute', display: 'flex', width: '100%', borderBottom: `1px solid ${border}`, '&:hover': { background: theme.colors.action.hover } }),
     labelCell: css({ display: 'flex', flexShrink: 0, alignItems: 'center', gap: 3, paddingRight: 6, borderRight: `1px solid ${border}`, boxSizing: 'border-box', minWidth: 0 }),
     expander: css({ '&&': { width: 20, flexShrink: 0, padding: 0, border: 0, background: 'none', fontFamily: 'monospace', color: theme.colors.text.secondary } }),
@@ -320,5 +416,6 @@ function getStyles(theme: GrafanaTheme2) {
     footer: css({ flexShrink: 0, display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'space-between', padding: '5px 10px', borderTop: `1px solid ${border}`, fontSize: 10, color: theme.colors.text.secondary }),
     detail: css({ position: 'absolute', top: 48, right: 8, bottom: 24, width: 360, maxWidth: 'calc(100% - 16px)', zIndex: 6, padding: 16, border: `1px solid ${border}`, borderRadius: 6, background: theme.colors.background.primary, boxShadow: theme.shadows.z3, overflow: 'auto', '& h3': { fontSize: 16, margin: '12px 0', overflowWrap: 'anywhere' }, '& dl': { margin: '12px 0' }, '& dl > div': { display: 'grid', gridTemplateColumns: '100px minmax(0, 1fr)', gap: 8, padding: '5px 0', borderBottom: `1px solid ${border}` }, '& dt': { color: theme.colors.text.secondary, fontWeight: 400 }, '& dd': { margin: 0, overflowWrap: 'anywhere' } }),
     detailHeader: css({ display: 'flex', justifyContent: 'space-between', alignItems: 'center', '& strong': { fontFamily: theme.typography.fontFamilyMonospace, color: theme.colors.text.link } }),
+    relationships: css({ margin: '12px 0', padding: '8px 0', color: theme.colors.text.secondary, '& strong': { display: 'block', color: theme.colors.text.primary, marginBottom: 5 }, '& div': { padding: '3px 0' }, '& code': { color: theme.colors.text.link } }),
   };
 }

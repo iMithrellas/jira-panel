@@ -12,6 +12,8 @@ older root-level Grafana 11 demo is not the plugin development environment.
 - Search by key, summary, assignee, status or issue type. Multi-project filters retain ancestor context.
 - Creation-to-resolution bars for resolved tickets; creation-to-last-observation bars for open tickets.
 - Descendant rollups on parent rows: child count, resolved child count, and stale child count.
+- Colored routed directional arrows anchored to issue bars, with boxed labels for Jira links such as `blocks`, `clones`, `duplicates`, `relates to`, and custom link types.
+- A `Hide arrows` / `Show arrows` control for decluttering the timeline without changing relationship data.
 - Status-category colors, stale-observation markers, detail drawer and safe links to Jira.
 - Local zoom, pan and fit-to-tickets. Collapsing rows does not change the fitted time extent.
 - Large-tree controls: expand through a selected depth, collapse resolved branches, and navigate search matches.
@@ -22,6 +24,9 @@ older root-level Grafana 11 demo is not the plugin development environment.
 The timeline does **not** represent planned dates, status transitions, dependencies,
 or Jira changes that happened after the last observation. Parent bars show the
 parent issue's own lifetime, not a synthetic roll-up of its children.
+Relationship arrows are drawn when both endpoints are present and visible in the
+selected hierarchy. Links to tickets outside the query or collapsed branches are
+listed only from the selected ticket's details until those endpoints are visible.
 
 ## Run The Playground
 
@@ -65,7 +70,12 @@ login is `jira-panel-dev` / `jira-panel-development-only`. **Do not expose this
 stack through a public interface, proxy or tunnel.** See [development notes](dev/README.md)
 for ports, fixture details, and stop/reset commands.
 
-For iterative changes, run `npm run dev` and reload the dashboard after compilation.
+Each build stamps `dist/plugin.json` with a bundle-content hash in `info.version`,
+so changed code gets a new Grafana plugin cache key. After rebuilding (including
+`npm run dev` watch compilations), restart the development Grafana to pick up the
+new metadata, then reload the browser page. Grafana's dashboard **Refresh** button
+only reruns queries; it does not reload plugin code.
+See the [rebuild commands](dev/README.md#commands).
 Build `dist/` before starting Compose, so Docker does not create it as root.
 
 ## Query Contract
@@ -92,6 +102,7 @@ transformation (`labels`, JSON, replace all) to demonstrate a flat table.
 | `project_key`, `summary`, `issue_type` | Project filtering and display metadata |
 | `status`, `status_category` | Label and color (`new`, `indeterminate`, `done`) |
 | `assignee`, `priority` | Search/detail metadata |
+| `issue_links` | Optional normalized relationships: `target_key`, canonical `type`, current-side `display`, and `direction` |
 
 Example LogsQL, with a source selector adjusted for your exporter:
 
@@ -99,7 +110,7 @@ Example LogsQL, with a source selector adjusted for your exporter:
 {app="jira-exporter", instance="demo", environment="development"} kind:="issue_state"
 | stats by (app, instance, environment, issue_key) row_max(_time) as row
 | unpack_json from row
-| fields _time, sync_ts, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, created_at, resolved_at, is_resolved, status, status_category, priority, assignee
+| fields _time, sync_ts, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee
 | sort by (issue_key)
 | limit 10001
 ```

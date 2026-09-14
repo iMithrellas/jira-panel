@@ -29,6 +29,14 @@ export interface Issue {
   end: number;
   observed: number;
   resolved: boolean;
+  links: IssueLink[];
+}
+
+export interface IssueLink {
+  targetKey: string;
+  type: string;
+  display: string;
+  direction: 'inward' | 'outward';
 }
 
 export interface IssueNode {
@@ -50,4 +58,12 @@ export interface Rollup {
   descendants: number;
   doneDescendants: number;
   staleDescendants: number;
+}
+
+export interface Relationship {
+  fromId: string;
+  toId: string;
+  fromRow: number;
+  toRow: number;
+  label: string;
 }

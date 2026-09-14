@@ -31,6 +31,19 @@ non-secret local bootstrap account is `jira-panel-dev` /
 Host `GF_SECURITY_ADMIN_*` variables are not passed through to the container.
 Only `easit-jira-panel` is allowed to load unsigned.
 
+After code changes, rebuild and restart Grafana so it reads the new bundle-specific
+plugin version, then reload the browser page (not just Grafana's **Refresh** button):
+
+```sh
+npm run build
+docker compose --env-file /dev/null -p jira-panel-dev -f docker-compose.dev.yml restart grafana
+docker compose --env-file /dev/null -p jira-panel-dev -f docker-compose.dev.yml up -d --wait
+```
+
+No reseeding is needed for code-only changes. The current UI includes **Depth**,
+**CSV**, **JSON**, child-count badges, and a `blocks` arrow between `PM-100` and
+`OPS-900003`. Missing all of these indicates an older plugin bundle is still loaded.
+
 Custom loopback ports (set both Compose's logs port and the seeder URL explicitly):
 
 ```sh
@@ -73,6 +86,7 @@ summaries are synthetic; Jira links use the reserved `jira.example.invalid` doma
 - Stale observations are three days old, beyond `staleHours=24` but within the 30-day query window.
 - `OPS-900003`: a seven-day-old resolved revision followed by the latest reopened state, with no `resolved_at` on the latest row.
 - Every 17th issue has an older revision; PM-100 also has an exact duplicate. Older revisions are ingested after current rows to test timestamp-based selection rather than arrival order.
+- PM-100 includes synthetic `blocks` and `clones` relationships; the first two multi-child workstreams also have `blocks`, `relates to`, `duplicates`, and `clones` links for arrow routing.
 
 Keys, relationships, status choices, and relative dates are deterministic. Each
 run captures one current clock anchor; normal heartbeats are one minute old and
@@ -112,6 +126,7 @@ Each heartbeat has these fields:
 | `is_resolved` | JSON boolean on ingestion; VictoriaLogs may return it as a string |
 | `status`, `status_category` | Display status; category `new`, `indeterminate`, or `done` |
 | `priority`, `assignee` | Display strings; empty assignee means unassigned |
+| `issue_links` | Optional normalized relationship array with target key, canonical type, current-side display label, and inward/outward direction |
 
 The insertion request also supplies `_msg` as a copy of `summary`, leaving the
 mandatory `summary` field intact. The query retains all contract fields:
@@ -120,7 +135,7 @@ mandatory `summary` field intact. The query retains all contract fields:
 {app="jira-exporter", instance="demo", environment="development"} kind:="issue_state"
 | stats by (app, instance, environment, issue_key) row_max(_time) as row
 | unpack_json from row
-| fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, created_at, resolved_at, is_resolved, status, status_category, priority, assignee
+| fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee
 | sort by (issue_key)
 | limit 10001
 ```

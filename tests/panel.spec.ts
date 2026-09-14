@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
@@ -6,9 +8,41 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByTestId('issue-count')).toContainText('62 tickets');
 });
 
+test('loads the plugin with a cache version matching the current build', async ({ page, request }) => {
+  const bundle = await readFile(new URL('../dist/module.js', import.meta.url));
+  const hash = createHash('sha256').update(bundle).digest('hex').slice(0, 12);
+  const response = await request.get('/public/plugins/easit-jira-panel/plugin.json');
+  expect(response.ok()).toBe(true);
+  const metadata = await response.json();
+  expect(metadata.info.version).toMatch(new RegExp(`\\+${hash}$`));
+  const urls = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name));
+  const pluginUrl = urls.find((url) => new URL(url).pathname === '/public/plugins/easit-jira-panel/module.js');
+  expect(pluginUrl).toBeDefined();
+  expect(new URL(pluginUrl!).searchParams.get('_cache')?.replace(/ /g, '+')).toBe(metadata.info.version);
+});
+
 test('loads real VictoriaLogs results, expands parents and shows observed end details', async ({ page }) => {
   await expect(page.getByRole('treegrid')).toHaveAttribute('aria-rowcount', '44');
   await expect(page.getByTestId('rollup-badge').first()).toContainText('61 children');
+  await expect(page.getByTestId('relationship-arrow').first()).toBeVisible();
+  await expect(page.getByTestId('relationship-arrow').first()).toContainText('blocks');
+  await expect(page.getByTestId('relationship-arrow')).toHaveCount(5);
+  const firstRelationship = page.getByTestId('relationship-arrow').first();
+  await expect(firstRelationship.locator('text')).toHaveCSS('opacity', '0');
+  const hoverPoint = await firstRelationship.locator('path').evaluate((path) => {
+    const pathElement = path as SVGPathElement;
+    const svg = pathElement.ownerSVGElement!;
+    const point = pathElement.getPointAtLength(pathElement.getTotalLength() / 2);
+    const bounds = svg.getBoundingClientRect();
+    const viewBox = svg.viewBox.baseVal;
+    return { x: bounds.left + point.x / viewBox.width * bounds.width, y: bounds.top + point.y / viewBox.height * bounds.height };
+  });
+  await page.mouse.move(hoverPoint.x, hoverPoint.y);
+  await expect(firstRelationship.locator('text')).toHaveCSS('opacity', '1');
+  await page.getByRole('button', { name: 'Hide arrows', exact: true }).click();
+  await expect(page.getByTestId('relationship-arrow')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Show arrows', exact: true }).click();
+  await expect(page.getByTestId('relationship-arrow')).toHaveCount(5);
   await page.getByRole('region', { name: 'Jira hierarchy timeline', exact: true }).screenshot({ path: 'test-results/hierarchy-dark.png' });
   await page.getByRole('button', { name: 'Collapse all', exact: true }).click();
   await expect(page.getByTestId('jira-row')).toHaveCount(1);
@@ -17,6 +51,7 @@ test('loads real VictoriaLogs results, expands parents and shows observed end de
   await page.getByRole('button', { name: 'Details for PM-100', exact: true }).click();
   const details = page.getByRole('complementary', { name: 'Ticket details PM-100' });
   await expect(details).toContainText('Observed end');
+  await expect(details).toContainText('blocks');
   await expect(details.getByRole('link', { name: 'Open in Jira' })).toHaveAttribute('href', 'https://jira.example.invalid/browse/PM-100');
   await page.getByRole('button', { name: 'Close ticket details' }).click();
   await page.getByRole('textbox', { name: 'Search tickets' }).fill('Demo reopened issue');

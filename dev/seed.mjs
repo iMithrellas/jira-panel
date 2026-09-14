@@ -92,6 +92,25 @@ try {
   const reopened = addIssue('OPS', primary.issue_key, 'Demo reopened issue', 'Bug', 65, { key: 'OPS-900003', resolved: false });
   reopened.status = 'Reopened';
   reopened.status_category = 'indeterminate';
+  function relate(source, target, type, outward, inward) {
+    source.issue_links = [...(source.issue_links ?? []), { target_key: target.issue_key, type, display: outward, direction: 'outward' }];
+    target.issue_links = [...(target.issue_links ?? []), { target_key: source.issue_key, type, display: inward, direction: 'inward' }];
+  }
+  relate(primary, reopened, 'blocks', 'blocks', 'is blocked by');
+  const firstStory = issues.find((issue) => issue.issue_type === 'Story');
+  const firstSubtask = firstStory && issues.find((issue) => issue.parent_key === firstStory.issue_key);
+  if (firstStory && firstSubtask) {
+    relate(firstStory, firstSubtask, 'clones', 'clones', 'is cloned by');
+  }
+  for (const [epicIndex, type] of [[0, 'blocks'], [0, 'relates to'], [1, 'duplicates'], [1, 'clones']]) {
+    const epic = issues.filter((issue) => issue.issue_type === 'Epic')[epicIndex];
+    const children = epic && issues.filter((issue) => issue.parent_key === epic.issue_key && issue.issue_type === 'Story');
+    const child = children?.[type === 'blocks' || type === 'duplicates' ? 0 : 1];
+    if (epic && child) {
+      const reverse = type === 'blocks' ? 'is blocked by' : type === 'relates to' ? 'relates to' : type === 'duplicates' ? 'is duplicated by' : 'is cloned by';
+      relate(epic, child, type, type, reverse);
+    }
+  }
   const revisions = [
     { ...reopened, _time: daysAgo(7), sync_ts: daysAgo(7), is_resolved: true, resolved_at: daysAgo(8), status: 'Done', status_category: 'done' },
   ];
@@ -136,7 +155,7 @@ try {
     }
     console.log(`Seeded ${issues.length} issues in ${rows.length} observations into ${base.origin}.`);
     console.log('Roots: PM-100 (61 descendants), PM-200 (9 descendants), PM-300 (3756 descendants).');
-    console.log('Includes missing parents, stale heartbeats, a reopened issue, older revisions, and an exact duplicate.');
+    console.log('Includes missing parents, stale heartbeats, a reopened issue, older revisions, an exact duplicate, and multi-child relationships.');
   }
 } catch (error) {
   console.error(`Development seed failed: ${error.message}`);
