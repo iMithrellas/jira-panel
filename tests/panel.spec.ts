@@ -1,6 +1,18 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+async function configurePanel(page: Page, options: Record<string, unknown>, overrides: unknown[] = []) {
+  await page.route(/\/(?:api\/dashboards\/uid|apis\/dashboard\.grafana\.app\/[^/]+\/namespaces\/[^/]+\/dashboards)\/jira-hierarchy-dev(?:\/dto)?(?:\?|$)/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const dashboard = body.dashboard ?? body.spec;
+    const panel = dashboard.elements?.['panel-1']?.spec.vizConfig.spec ?? dashboard.panels[0];
+    panel.options = { ...panel.options, ...options };
+    panel.fieldConfig = { defaults: {}, overrides };
+    await route.fulfill({ response, json: body });
+  });
+}
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/d/jira-hierarchy-dev/jira-hierarchy-development?kiosk');
@@ -11,15 +23,15 @@ test.beforeEach(async ({ page }) => {
 test('loads the plugin with a cache version matching the current build', async ({ page, request }) => {
   const bundle = await readFile(new URL('../dist/module.js', import.meta.url));
   const hash = createHash('sha256').update(bundle).digest('hex').slice(0, 12);
-  const response = await request.get('/public/plugins/easit-jira-panel/plugin.json');
+  const response = await request.get('/public/plugins/imithrellas-jira-panel/plugin.json');
   expect(response.ok()).toBe(true);
   const metadata = await response.json();
   expect(metadata.info.version).toMatch(new RegExp(`\\+${hash}$`));
-  const servedBundle = await request.get('/public/plugins/easit-jira-panel/module.js');
+  const servedBundle = await request.get('/public/plugins/imithrellas-jira-panel/module.js');
   expect(servedBundle.ok()).toBe(true);
   expect(await servedBundle.body()).toEqual(bundle);
   const urls = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name));
-  const pluginUrl = urls.find((url) => new URL(url).pathname === '/public/plugins/easit-jira-panel/module.js');
+  const pluginUrl = urls.find((url) => new URL(url).pathname === '/public/plugins/imithrellas-jira-panel/module.js');
   expect(pluginUrl).toBeDefined();
   expect(new URL(pluginUrl!).searchParams.get('_cache')?.replace(/ /g, '+')).toBe(metadata.info.version);
 });
@@ -222,4 +234,82 @@ test('renders a datasource-neutral table and isolates malformed query rows', asy
   await expect(page.getByTestId('issue-count')).toContainText('1 tickets / 1 rows');
   await page.getByRole('button', { name: 'Details for PM-100', exact: true }).click();
   await expect(page.getByRole('complementary')).toContainText('Unspecified');
+  await expect(page.getByRole('complementary').getByLabel('Additional fields')).toContainText('Acme');
+  await page.getByRole('button', { name: 'Close ticket details' }).click();
+  await page.getByText('Validation details (1 of 1 excluded rows)', { exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Query A, frame 1, row 2, BAD-1: summary');
+  await expect(page.getByRole('status')).toContainText('Expected a string or null');
+});
+
+test('uses mapped fields, source identity, native field overrides, data links and undirected relationships', async ({ page }) => {
+  await configurePanel(page, {
+    fieldMappings: { key: 'id', parent: 'belongsTo', summary: 'title', created: 'opened', observed: 'observedAt', resolved: 'finished', isResolved: 'closed', links: 'relations' },
+    sourceFields: 'site', metadataFields: 'effort', colorField: 'effort', collapseMode: 'subtree',
+  }, [
+    { matcher: { id: 'byName', options: 'effort' }, properties: [
+      { id: 'displayName', value: 'Effort estimate' }, { id: 'unit', value: 'h' }, { id: 'decimals', value: 1 },
+      { id: 'color', value: { mode: 'fixed', fixedColor: '#123456' } },
+    ] },
+    { matcher: { id: 'byName', options: 'id' }, properties: [
+      { id: 'links', value: [{ title: 'Open source', url: '${__data.fields.url}', targetBlank: true }] },
+    ] },
+  ]);
+  const now = Date.now();
+  await page.route('**/api/ds/query*', (route) => route.fulfill({ json: { results: { A: { status: 200, frames: [{
+    schema: { refId: 'A', fields: [
+      { name: 'id', type: 'string' }, { name: 'title', type: 'string' }, { name: 'belongsTo', type: 'string' },
+      { name: 'opened', type: 'time' }, { name: 'observedAt', type: 'time' }, { name: 'finished', type: 'time' },
+      { name: 'closed', type: 'boolean' }, { name: 'site', type: 'string' }, { name: 'effort', type: 'number' },
+      { name: 'url', type: 'string' }, { name: 'relations', type: 'other' },
+    ] },
+    data: { values: [
+      ['PM-100', 'OPS-1', 'PM-100', 'OPS-1'], ['East program', 'East task', 'West program', 'West task'], [null, 'PM-100', null, 'PM-100'],
+      Array(4).fill(now - 86400000), Array(4).fill(now), [null, null, now - 1000, null],
+      [false, false, true, false], ['east', 'east', 'west', 'west'], [5, 2.5, 4, 1.5],
+      ['https://east.example/issues/PM-100', 'https://east.example/issues/OPS-1', 'https://west.example/issues/PM-100', 'https://west.example/issues/OPS-1'],
+      [[{ target_key: 'OPS-1', type: 'related', direction: 'undirected' }], [], [], []],
+    ] },
+  }] } } } }));
+  await page.reload();
+  await expect(page.getByTestId('issue-count')).toContainText('4 tickets / 4 rows');
+  await page.getByRole('button', { name: 'Collapse completed', exact: true }).click();
+  await expect(page.getByRole('treegrid')).toHaveAttribute('aria-rowcount', '4');
+  const relationship = page.getByTestId('relationship-arrow');
+  await expect(relationship).toHaveCount(1);
+  await expect(relationship).toHaveAttribute('data-directed', 'false');
+  expect(await relationship.locator('path').getAttribute('marker-end')).toBeNull();
+  const west = page.getByTestId('jira-row').filter({ hasText: 'West task' });
+  await expect(west.getByRole('button', { name: 'Details for OPS-1', exact: true })).toHaveCSS('background-color', 'rgb(18, 52, 86)');
+  await west.getByRole('button', { name: 'Details for OPS-1', exact: true }).click();
+  const details = page.getByRole('complementary', { name: 'Ticket details OPS-1' });
+  await expect(details.getByRole('link', { name: 'Open source' })).toHaveAttribute('href', 'https://west.example/issues/OPS-1');
+  await expect(details.getByLabel('Additional fields')).toContainText('Effort estimate');
+  await expect(details.getByLabel('Additional fields')).toContainText('1.5 h');
+  await page.getByRole('button', { name: 'Close ticket details' }).click();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export JSON', exact: true }).click();
+  const stream = await (await download).createReadStream();
+  let body = '';
+  for await (const chunk of stream!) { body += chunk.toString(); }
+  expect(JSON.parse(body).find((record: { summary: string }) => record.summary === 'West task').custom_fields).toEqual({ effort: 1.5 });
+});
+
+test('uses per-row URLs from labels and avoids falling back to a different site', async ({ page }) => {
+  await configurePanel(page, { issueUrlField: 'ticket_url', sourceFields: 'site' });
+  const now = Date.now();
+  await page.route('**/api/ds/query*', (route) => route.fulfill({ json: { results: { A: { status: 200, frames: [{
+    schema: { refId: 'A', fields: [{ name: 'labels', type: 'other' }] },
+    data: { values: [[
+      { issue_key: 'PM-100', summary: 'East program', site: 'east', created_at: now - 86400000, sync_ts: now, is_resolved: false, ticket_url: 'https://east.example/PM-100' },
+      { issue_key: 'PM-100', summary: 'West program', site: 'west', created_at: now - 86400000, sync_ts: now, is_resolved: false, ticket_url: 'javascript:alert(1)' },
+    ]] },
+  }] } } } }));
+  await page.reload();
+  await expect(page.getByTestId('issue-count')).toContainText('2 tickets / 2 rows');
+  await page.getByTestId('jira-row').filter({ hasText: 'East program' }).getByRole('button', { name: 'Details for PM-100', exact: true }).click();
+  await expect(page.getByRole('complementary').getByRole('link', { name: 'Open ticket' })).toHaveAttribute('href', 'https://east.example/PM-100');
+  await page.getByRole('button', { name: 'Close ticket details' }).click();
+  await page.getByTestId('jira-row').filter({ hasText: 'West program' }).getByRole('button', { name: 'Details for PM-100', exact: true }).click();
+  await expect(page.getByRole('complementary')).toContainText('Ticket URL field ticket_url is missing or invalid');
+  await expect(page.getByRole('complementary').getByRole('link')).toHaveCount(0);
 });

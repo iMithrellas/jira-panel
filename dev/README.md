@@ -29,7 +29,7 @@ Open <http://127.0.0.1:3300/d/jira-hierarchy-dev>. The provisioned folder is
 non-secret local bootstrap account is `jira-panel-dev` /
 `jira-panel-development-only`; use it to edit panel options. Anonymous access is Viewer.
 Host `GF_SECURITY_ADMIN_*` variables are not passed through to the container.
-Only `easit-jira-panel` is allowed to load unsigned.
+Only `imithrellas-jira-panel` is allowed to load unsigned.
 
 After code changes, rebuild and restart Grafana so it reads the new bundle-specific
 plugin version, then reload the browser page (not just Grafana's **Refresh** button):
@@ -107,7 +107,7 @@ other trees. UI edits are temporary; persist intended changes in the JSON file.
 
 The dashboard is classic schema (`panels[]`, `schemaVersion: 39`), not the v2
 `elements` format used by the repository's other dashboards. Its single panel is
-ID 1, type `easit-jira-panel`, datasource UID `jira-dev-logs`. Options match the
+ID 1, type `imithrellas-jira-panel`, datasource UID `jira-dev-logs`. Options match the
 panel contract: `rootKey=PM-100`, `initialDepth=2`, `staleHours=24`,
 `jiraBaseUrl=https://jira.example.invalid`, `maxIssues=10000`, `rowHeight=36`,
 `labelWidth=420`.

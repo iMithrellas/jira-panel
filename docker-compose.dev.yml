@@ -10,7 +10,7 @@ services:
     ports:
       - "127.0.0.1:${PANEL_GRAFANA_PORT:-3300}:3000"
     environment:
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: easit-jira-panel
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: imithrellas-jira-panel
       GF_PLUGINS_PREINSTALL: victoriametrics-logs-datasource@0.26.3
       GF_PLUGINS_PREINSTALL_ASYNC: "false"
       GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
@@ -29,7 +29,7 @@ services:
       GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./dist:/var/lib/grafana/plugins/easit-jira-panel:ro
+      - ./dist:/var/lib/grafana/plugins/imithrellas-jira-panel:ro
       - ./dev/provisioning:/etc/grafana/provisioning:ro
       - ./dev/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:

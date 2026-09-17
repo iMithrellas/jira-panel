@@ -2,8 +2,12 @@ import { css } from '@emotion/css';
 import { dateTimeFormat, type GrafanaTheme2, type PanelProps } from '@grafana/data';
 import { useStyles2, useTheme2 } from '@grafana/ui';
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, discoverSearchFields, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
+import { discoverSearchFields, readIssues } from './data';
+import { IssueDetails } from './IssueDetails';
+import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, recordsToCsv, selectRows } from './model';
+import { categoryColor, presentField } from './presentation';
 import { defaults, type Issue, type JiraOptions, type SearchField } from './types';
+import { ValidationDetails } from './ValidationDetails';
 
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
   Number.isFinite(value) ? Math.max(min, Math.min(max, Number(value))) : fallback;
@@ -34,9 +38,10 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const staleMs = clamp(options.staleHours, defaults.staleHours, 1, 8760) * 3600000;
   const [depthControl, setDepthControl] = useState(initialDepth);
 
-  // Cache the O(n) data work so scrolling only renders the small virtual window.
-  const parsed = useMemo(() => readIssues(data.series, maxIssues), [data.series, maxIssues]);
-  const searchFieldOptions = useMemo(() => discoverSearchFields(parsed.issues, options.searchableFields), [parsed.issues, options.searchableFields]);
+  const parsed = useMemo(() => readIssues(data.series, maxIssues, { fieldMappings: options.fieldMappings, sourceFields: options.sourceFields }),
+    [data.series, maxIssues, options.fieldMappings, options.sourceFields]);
+  const searchFieldOptions = useMemo(() => discoverSearchFields(parsed.issues, options.searchableFields, parsed.fieldMappings),
+    [parsed.issues, options.searchableFields, parsed.fieldMappings]);
   const activeSearchField = searchFieldOptions.some(({ value }) => value === searchField) ? searchField : 'all';
   const tree = useMemo(() => buildTree(parsed.issues), [parsed.issues]);
   const rollups = useMemo(() => computeRollups(tree, clock, staleMs), [tree, clock, staleMs]);
@@ -103,9 +108,8 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const format = (value: number, short = false) => dateTimeFormat(value, {
     timeZone, format: short ? (range[1] - range[0] < 3 * 86400000 ? 'MMM D HH:mm' : 'MMM D, YYYY') : 'YYYY-MM-DD HH:mm:ss',
   });
-  const color = (issue: Issue) => issue.category === 'done' ? theme.colors.success.main
-    : issue.category === 'indeterminate' ? theme.colors.info.main
-      : issue.category === 'new' ? theme.colors.text.secondary : theme.colors.warning.main;
+  const color = (issue: Issue) => (options.colorField?.trim()
+    ? presentField(data.series[issue.origin.frameIndex], issue, options.colorField.trim()).color : undefined) ?? categoryColor(issue.category, theme);
   const duration = (issue: Issue) => `${((issue.end - issue.start) / 86400000).toLocaleString(undefined, { maximumFractionDigits: 1 })}d`;
   const relationshipBranches = new Map<string, number>();
   const relationshipVisuals = visibleRelationships.flatMap((relationship, index) => {
@@ -130,7 +134,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     const badgeWidth = Math.max(42, relationship.label.length * 5.8 + 14);
     const labelX = Math.max(labelWidth + badgeWidth / 2 + 6, endX - badgeWidth / 2 - 10);
     const labelY = (startY + endY) / 2 - 9;
-    const relationshipID = `${relationship.fromId}-${relationship.toId}-${relationship.label}`;
+    const relationshipID = JSON.stringify([relationship.fromId, relationship.toId, relationship.label, relationship.directed]);
     const path = `M ${startX} ${startY} H ${laneX} V ${verticalEnd} Q ${laneX} ${endY} ${laneX + corner} ${endY} H ${endX}`;
     return [{
       ...relationship,
@@ -165,7 +169,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   };
   const toggle = (id: string, expanded: boolean) => setExpansion((previous) => new Map(previous).set(id, !expanded));
   const expandThroughDepth = () => setExpansion(expansionForDepth(tree, root, Math.round(clamp(depthControl, initialDepth, 0, 100)), rootSource));
-  const collapseFinished = () => setExpansion(collapseCompleted(tree, rollups));
+  const collapseFinished = () => setExpansion(collapseCompleted(tree, rollups, options.collapseMode ?? defaults.collapseMode));
   const zoom = (factor: number) => {
     const center = (range[0] + range[1]) / 2;
     const half = Math.max(60000, Math.min(10 * 365 * 86400000, (range[1] - range[0]) * factor)) / 2;
@@ -175,9 +179,8 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     const shift = (range[1] - range[0]) * 0.25 * direction;
     setRangeOverride([range[0] + shift, range[1] + shift]);
   };
-  const link = selected ? jiraLink(replaceVariables(options.jiraBaseUrl ?? ''), selected.key) : undefined;
   const download = (format: 'csv' | 'json') => {
-    const records = exportRecords(selection.exportRows, rollups);
+    const records = exportRecords(selection.exportRows, rollups, options.metadataFields);
     const body = format === 'csv' ? recordsToCsv(records) : JSON.stringify(records, null, 2) + '\n';
     const blob = new Blob([body], { type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -200,9 +203,9 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   const ticks = Array.from({ length: 5 }, (_, i) => range[0] + (range[1] - range[0]) * i / 4);
   const warnings = [
     parsed.truncated ? `Partial result: limited to ${maxIssues.toLocaleString()} issues. Narrow the query; parents or children may be missing.` : '',
-    parsed.invalid ? `${parsed.invalid} invalid row(s) excluded. Check string fields, links, and timestamps: created_at <= end <= observation time. Required: issue_key, created_at, observation time, is_resolved, and resolved_at when resolved. See the query contract.` : '',
+    parsed.invalid ? `${parsed.invalid} invalid row(s) excluded. Check validation details and field mappings.` : '',
     stats.warnings ? `${stats.warnings} missing or cyclic parent relationship(s); affected tickets remain visible.` : '',
-    sourceCount > 1 ? `${sourceCount} source namespaces; relationships are isolated per source. Jira links use the configured base URL.` : '',
+    sourceCount > 1 ? `${sourceCount} source namespaces; relationships are isolated per source. Use per-row URLs or key-field data links when combining Jira sites.` : '',
   ].filter(Boolean);
 
   return (
@@ -261,18 +264,21 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
       </div>
       <div className={styles.status}>
         <div className={styles.legend}>
-          {(['new', 'indeterminate', 'done'] as const).map((category, i) => <span key={category}>
-            <i style={{ background: color({ category } as Issue) }} />{['To do', 'In progress', 'Done'][i]}
-          </span>)}
+          {options.colorField?.trim() ? <span>Color by {options.colorField}</span>
+            : (['new', 'indeterminate', 'done'] as const).map((category, i) => <span key={category}>
+              <i style={{ background: categoryColor(category, theme) }} />{['To do', 'In progress', 'Done'][i]}
+            </span>)}
           <span className={styles.openLegend}>Open = last observed</span>
-          {showRelationships && relationships.length > 0 && <span className={styles.relationshipLegend}><i />{relationships.length} {relationships.length === 1 ? 'dependency' : 'dependencies'}</span>}
+          {showRelationships && relationships.length > 0 && <span className={styles.relationshipLegend}><i />{relationships.length} {relationships.length === 1 ? 'relationship' : 'relationships'}</span>}
           {rootSource && <span>Source: {JSON.parse(rootSource).filter(Boolean).join(' / ')}</span>}
         </div>
         {stats.lastSeen > 0 && <span title={`Observation range: ${format(stats.earliestSeen)} to ${format(stats.lastSeen)} (${timeZone})`}>
           Latest observation {format(stats.lastSeen)}{stats.stale > 0 && <strong className={styles.stale}> / {stats.stale.toLocaleString()} stale</strong>}
         </span>}
       </div>
-      {warnings.length > 0 && <div role="status" className={styles.warning}>{warnings.join(' ')}</div>}
+      {warnings.length > 0 && <div role="status" className={styles.warning}>
+        {warnings.join(' ')}<ValidationDetails diagnostics={parsed.diagnostics} invalid={parsed.invalid} />
+      </div>}
       {data.error && <div role="alert" className={styles.warning}>Query failed: {data.error.message}. Any displayed rows may be from the previous result.</div>}
       <div className={styles.axisClip}>
         <div className={styles.axis} style={{ width: innerWidth, transform: `translateX(${-scroll.left}px)` }}>
@@ -292,6 +298,10 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
             const rollup = rollups.get(issue.id);
             const position = barPosition(issue.start, issue.end, range);
             const stale = clock - issue.observed > staleMs;
+            const background = color(issue);
+            const frame = data.series[issue.origin.frameIndex];
+            const summary = presentField(frame, issue, parsed.fieldMappings.summary).text;
+            const status = presentField(frame, issue, parsed.fieldMappings.status).text;
             const title = `${issue.key}: ${issue.summary}\n${issue.status} | ${issue.type} | ${issue.assignee || 'Unassigned'}\nCreated: ${format(issue.start)}\n${issue.resolved ? 'Resolved' : 'Last observed'}: ${format(issue.end)}\nLifetime: ${duration(issue)}${stale ? '\nStale observation' : ''}${node.warning ? `\n${node.warning}` : ''}`;
             return <div key={issue.id} role="row" aria-rowindex={first + index + 1} aria-level={depth + 1}
               aria-expanded={hasChildren ? expanded : undefined} aria-selected={selectedID === issue.id}
@@ -301,7 +311,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
                 <button className={styles.expander} type="button" disabled={!hasChildren || selection.filtering} aria-label={`${expanded ? 'Collapse' : 'Expand'} ${issue.key}`}
                   style={{ visibility: hasChildren ? 'visible' : 'hidden' }} onClick={() => toggle(issue.id, expanded)}>{expanded ? 'v' : '>'}</button>
                 <button type="button" className={styles.ticket} style={{ opacity: context ? 0.6 : 1 }} title={title} onClick={() => setSelectedID(issue.id)}>
-                  <span className={styles.key}>{issue.key}</span><span className={styles.summary}>{issue.summary || '(no summary)'}</span>
+                  <span className={styles.key}>{issue.key}</span><span className={styles.summary}>{summary || '(no summary)'}</span>
                   {!!rollup?.descendants && <span className={styles.rollup} data-testid="rollup-badge" title={`${rollup.descendants} descendants, ${rollup.doneDescendants} done, ${rollup.staleDescendants} stale`}>{rollup.descendants} children / {rollup.doneDescendants} done{rollup.staleDescendants ? ` / ${rollup.staleDescendants} stale` : ''}</span>}
                 </button>
                 {(node.warning || stale) && <span className={styles.marker} title={node.warning || 'Stale observation'} aria-label={node.warning || 'Stale observation'}>!</span>}
@@ -310,25 +320,25 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
                 {position ? <button type="button" aria-label={`Details for ${issue.key}`} title={title} className={styles.bar}
                   onClick={() => setSelectedID(issue.id)} style={{
                     left: `clamp(0px, ${position.left}%, calc(100% - 3px))`, width: `max(3px, ${position.width}%)`,
-                    background: color(issue), opacity: stale ? 0.55 : 0.9,
+                    background, color: theme.colors.getContrastText(background), opacity: stale ? 0.55 : 0.9,
                     borderRight: issue.resolved ? 'none' : `3px dashed ${theme.colors.background.primary}`,
                   }}>
-                  <span>{issue.status} / {duration(issue)}</span>
+                  <span>{status} / {duration(issue)}</span>
                 </button> : <span className={styles.outside}>Outside view</span>}
               </div>
             </div>;
           })}
           {showRelationships && <svg className={styles.links} width={innerWidth} height={selection.rows.length * rowHeight} viewBox={`0 0 ${innerWidth} ${selection.rows.length * rowHeight}`} aria-hidden="true">
             <defs>
-              {relationshipVisuals.map((relationship) => <marker key={relationship.markerId} id={relationship.markerId} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+              {relationshipVisuals.filter((relationship) => relationship.directed).map((relationship) => <marker key={relationship.markerId} id={relationship.markerId} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
                 <path d="M0,0 L8,4 L0,8 z" fill={relationship.color} />
               </marker>)}
             </defs>
             {relationshipVisuals.map((relationship) => {
               const hovered = hoveredRelationship === relationship.id;
-              return <g className={styles.relationshipArrow} key={relationship.id} data-testid="relationship-arrow">
-                <title>{`${relationship.label}: ${tree.nodes.get(relationship.fromId)?.issue.key ?? ''} -> ${tree.nodes.get(relationship.toId)?.issue.key ?? ''}`}</title>
-                <path className={styles.linkPath} d={relationship.path} stroke={relationship.color} markerEnd={`url(#${relationship.markerId})`} />
+              return <g className={styles.relationshipArrow} key={relationship.id} data-testid="relationship-arrow" data-directed={relationship.directed}>
+                <title>{`${relationship.label}: ${tree.nodes.get(relationship.fromId)?.issue.key ?? ''} ${relationship.directed ? '->' : '—'} ${tree.nodes.get(relationship.toId)?.issue.key ?? ''}`}</title>
+                <path className={styles.linkPath} d={relationship.path} stroke={relationship.color} markerEnd={relationship.directed ? `url(#${relationship.markerId})` : undefined} />
                 <rect className={styles.linkLabelBox} style={{ opacity: hovered ? 1 : 0 }} x={relationship.labelX - relationship.labelWidth / 2} y={relationship.labelY - 9} width={relationship.labelWidth} height={18} rx={4} stroke={relationship.color} />
                 <text className={styles.linkLabel} style={{ opacity: hovered ? 1 : 0 }} x={relationship.labelX} y={relationship.labelY}>{relationship.label}</text>
               </g>;
@@ -346,30 +356,12 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
         <span>Actual Jira parents / observed lifetimes, not planned schedules</span>
         <span>{selection.filtering ? 'Matching tickets + ancestor context' : 'Timeline fits fetched tickets; zoom is local'}</span>
       </div>
-      {selected && <aside className={styles.detail} aria-label={`Ticket details ${selected.key}`}>
-        <div className={styles.detailHeader}><strong>{selected.key}</strong><button type="button" aria-label="Close ticket details" onClick={() => setSelectedID(undefined)}>Close</button></div>
-        <h3>{selected.summary || '(no summary)'}</h3>
-        <dl>
-          {Object.entries({
-            Status: selected.status || 'Unknown', Type: selected.type || 'Unknown', Project: selected.project,
-            Parent: selected.parentKey || 'None', Assignee: selected.assignee || 'Unassigned', Priority: selected.priority || 'Not set',
-            Created: format(selected.start), [selected.resolved ? 'Resolved' : 'Observed end']: format(selected.end),
-            'Last observed': format(selected.observed), Lifetime: duration(selected),
-            Children: rollups.get(selected.id)?.descendants ? `${rollups.get(selected.id)!.descendants} (${rollups.get(selected.id)!.doneDescendants} done${rollups.get(selected.id)!.staleDescendants ? `, ${rollups.get(selected.id)!.staleDescendants} stale` : ''})` : 'None',
-            Source: JSON.parse(selected.source).filter(Boolean).join(' / ') || 'Unspecified',
-          }).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
-        </dl>
-        {clock - selected.observed > staleMs && <p className={styles.stale}>Stale observation. Current Jira state may differ.</p>}
-        {tree.nodes.get(selected.id)?.warning && <p className={styles.stale}>{tree.nodes.get(selected.id)?.warning}</p>}
-        {selected.links.length > 0 && <div className={styles.relationships}>
-          <strong>Relationships</strong>
-          {selected.links.map((link) => <div key={`${link.direction}-${link.targetKey}-${link.type}`}><span>{link.display || link.type}</span> <code>{link.targetKey}</code></div>)}
-        </div>}
-        <div className={styles.actions}>
-          <button type="button" onClick={() => { setRoot(selected.key); setRootSource(selected.source); setSearch(''); setProjects([]); }}>Focus subtree</button>
-          {link && <a href={link} target="_blank" rel="noopener noreferrer">Open in Jira</a>}
-        </div>
-      </aside>}
+      {selected && <IssueDetails issue={selected} frame={data.series[selected.origin.frameIndex]} fields={parsed.fieldMappings}
+        rollup={rollups.get(selected.id)} warning={tree.nodes.get(selected.id)?.warning} stale={clock - selected.observed > staleMs}
+        format={format} duration={duration(selected)} metadataFields={options.metadataFields} urlField={options.issueUrlField}
+        baseUrl={replaceVariables(options.jiraBaseUrl ?? '')} styles={styles}
+        onClose={() => setSelectedID(undefined)}
+        onFocus={() => { setRoot(selected.key); setRootSource(selected.source); setSearch(''); setProjects([]); }} />}
     </section>
   );
 }

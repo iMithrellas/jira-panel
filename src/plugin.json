@@ -2,16 +2,24 @@
   "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
   "type": "panel",
   "name": "Jira Hierarchy",
-  "id": "easit-jira-panel",
+  "id": "imithrellas-jira-panel",
   "info": {
     "description": "Explore Jira parent trees and observed ticket lifetimes, with virtualized rows and cross-project navigation.",
-    "author": { "name": "Easit" },
+    "author": { "name": "iMithrellas" },
     "keywords": ["jira", "hierarchy", "gantt", "timeline", "victorialogs"],
     "logos": { "small": "img/logo.svg", "large": "img/logo.svg" },
-    "version": "0.1.0",
-    "updated": "2026-09-10",
-    "screenshots": [],
-    "links": []
+    "version": "%VERSION%",
+    "updated": "%TODAY%",
+    "screenshots": [
+      { "name": "Jira hierarchy timeline", "path": "img/screenshot-dark.png" },
+      { "name": "Search and hierarchy filters", "path": "img/screenshot-search.png" }
+    ],
+    "links": [
+      { "name": "repository", "url": "https://github.com/iMithrellas/jira-panel" },
+      { "name": "documentation", "url": "https://github.com/iMithrellas/jira-panel#readme" },
+      { "name": "license", "url": "https://github.com/iMithrellas/jira-panel/blob/main/LICENSE" },
+      { "name": "raise issue", "url": "https://github.com/iMithrellas/jira-panel/issues" }
+    ]
   },
   "dependencies": { "grafanaDependency": ">=13.0.0", "plugins": [] }
 }

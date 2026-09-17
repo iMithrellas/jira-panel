@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-// Node 22+, no dependencies, no Jira access, and no environment-file loading.
 const dryRun = process.argv.includes('--dry-run');
 if (process.argv.slice(2).some((arg) => arg !== '--dry-run')) {
   console.error('Usage: node dev/seed.mjs [--dry-run]');
@@ -17,7 +16,7 @@ try {
     throw new Error('VL_DEV_URL must be an HTTP loopback origin without credentials, path, query, or fragment.');
   }
 
-  // One clock anchor; keys, relationships, statuses, and relative dates are deterministic.
+  // Use one clock anchor so all fixture timestamps share the same reference.
   const now = Date.now();
   const hour = 60 * 60 * 1000;
   const daysAgo = (days) => new Date(now - days * 24 * hour).toISOString();
@@ -129,7 +128,7 @@ try {
     });
   }
 
-  // Deliberately send older revisions LAST: query correctness must not depend on ingestion order.
+  // Ingest older revisions last to verify timestamp-based selection.
   const rows = [...issues, ...revisions, { ...primary }];
   if (dryRun) {
     process.stdout.write(rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
@@ -137,7 +136,7 @@ try {
     const endpoint = new URL('/insert/jsonline', base);
     endpoint.searchParams.set('_stream_fields', 'app,instance,environment');
     endpoint.searchParams.set('_time_field', '_time');
-    // Retain summary as a regular contract field, not just VictoriaLogs' _msg.
+    // Keep summary queryable by storing the log message separately as _msg.
     endpoint.searchParams.set('_msg_field', '_msg');
     for (let start = 0; start < rows.length; start += 500) {
       const body = rows.slice(start, start + 500)

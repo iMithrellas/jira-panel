@@ -1,135 +1,5 @@
-import type { DataFrame } from '@grafana/data';
-import type { Issue, IssueLink, IssueNode, Relationship, Rollup, SearchField, SearchFieldOption, TreeRow } from './types';
-
-const coreSearchFields: SearchFieldOption[] = [
-  { value: 'key', field: 'issue_key', label: 'Key' },
-  { value: 'summary', field: 'summary', label: 'Summary' },
-  { value: 'status', field: 'status', label: 'Status' },
-  { value: 'assignee', field: 'assignee', label: 'Assignee' },
-  { value: 'type', field: 'issue_type', label: 'Issue type' },
-];
-const structuralFields = new Set([
-  'app', 'instance', 'environment', 'kind', 'parent_key', 'issue_links',
-  'created_at', 'resolved_at', 'sync_ts', '_time', 'Time', 'time',
-  'is_resolved', 'status_category', 'labels', 'Line', 'ts', 'id',
-]);
-
-function searchableValues(row: Record<string, unknown>): Issue['searchValues'] {
-  const values: Issue['searchValues'] = {};
-  for (const [name, value] of Object.entries(row)) {
-    if (structuralFields.has(name) || name.startsWith('_')) { continue; }
-    const entries = Array.isArray(value) ? value : [value];
-    if (!entries.length || !entries.every((entry) => typeof entry === 'string' || typeof entry === 'boolean' ||
-      (typeof entry === 'number' && Number.isFinite(entry)))) { continue; }
-    const key = coreSearchFields.find((field) => field.field === name)?.value ?? `field:${name}`;
-    values[key] = entries.map(String);
-  }
-  return values;
-}
-
-export function discoverSearchFields(issues: Issue[], configured = ''): SearchFieldOption[] {
-  const names = new Set(issues.flatMap((issue) => Object.keys(issue.searchValues)));
-  const custom = [...names].filter((name) => name.startsWith('field:')).sort().map((value): SearchFieldOption => {
-    const field = value.slice(6);
-    const text = field.replace(/[_-]+/g, ' ');
-    return { value: value as `field:${string}`, field, label: text.charAt(0).toUpperCase() + text.slice(1) };
-  });
-  const allowed = new Set(configured.split(',').map((field) => field.trim()).filter(Boolean));
-  return [...coreSearchFields, ...custom].filter((option) => !allowed.size || allowed.has(option.field));
-}
-
-function timestamp(value: unknown): number {
-  if (typeof value === 'number') {
-    return new Date(value).getTime();
-  }
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.test(value)) { return NaN; }
-  const date = new Date(`${value.slice(0, 10)}T00:00:00Z`);
-  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value.slice(0, 10)) { return NaN; }
-  return Date.parse(value);
-}
-
-function object(value: unknown): Record<string, unknown> {
-  if (typeof value === 'string') {
-    try { value = JSON.parse(value); } catch { return {}; }
-  }
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function readLinks(value: unknown): IssueLink[] | undefined {
-  if (value == null || value === '') { return []; }
-  if (typeof value === 'string') {
-    try { value = JSON.parse(value); } catch { return undefined; }
-  }
-  if (!Array.isArray(value)) { return undefined; }
-  const links: IssueLink[] = [];
-  for (const entry of value) {
-    const link = object(entry);
-    const direction = link.direction === 'inward' ? 'inward' : link.direction === 'outward' ? 'outward' : undefined;
-    const target = link.target_key ?? link.targetKey;
-    const targetKey = typeof target === 'string' ? target.trim() : '';
-    const type = typeof link.type === 'string' ? link.type.trim() : '';
-    if (!direction || !targetKey || !type || (link.display != null && typeof link.display !== 'string')) { return undefined; }
-    links.push({ targetKey, type, display: typeof link.display === 'string' ? link.display : type, direction });
-  }
-  return links;
-}
-
-// Accept ordinary table frames and logs frames whose labels are JSON or objects.
-export function readIssues(frames: DataFrame[], maxIssues: number) {
-  const latest = new Map<string, { row: Record<string, unknown>; id: string; source: string; key: string; observed: number }>();
-  let invalid = 0;
-  let rawRows = 0;
-  for (const frame of frames) {
-    for (let index = 0; index < frame.length; index++) {
-      rawRows++;
-      // Raw datasource values are untrusted, not JiraDataRow until validated.
-      const row: Record<string, unknown> = Object.create(null);
-      for (const field of frame.fields) {
-        if (field.name === 'labels') { Object.assign(row, object(field.values[index])); }
-      }
-      for (const field of frame.fields) {
-        if (field.name !== 'labels') { row[field.name] = field.values[index]; }
-      }
-      const key = typeof row.issue_key === 'string' ? row.issue_key.trim() : '';
-      const observed = timestamp(row.sync_ts ?? row._time ?? row.Time);
-      if (!key || !Number.isFinite(observed) || ['app', 'instance', 'environment'].some((name) => row[name] != null && typeof row[name] !== 'string')) {
-        invalid++;
-        continue;
-      }
-      const source = JSON.stringify([row.app ?? '', row.instance ?? '', row.environment ?? '']);
-      const id = JSON.stringify([source, key]);
-      const previous = latest.get(id);
-      if (!previous || observed > previous.observed) {
-        latest.set(id, { row, id, source, key, observed });
-      }
-    }
-  }
-  const issues: Issue[] = [];
-  for (const { row, id, source, key, observed } of latest.values()) {
-    const resolved = row.is_resolved === true || row.is_resolved === 'true';
-    const hasResolutionFlag = resolved || row.is_resolved === false || row.is_resolved === 'false';
-    const start = timestamp(row.created_at);
-    const end = resolved ? timestamp(row.resolved_at) : observed;
-    const links = readLinks(row.issue_links);
-    const invalidText = ['parent_key', 'project_key', 'summary', 'issue_type', 'status', 'status_category', 'assignee', 'priority']
-      .some((name) => row[name] != null && typeof row[name] !== 'string');
-    if (!hasResolutionFlag || !Number.isFinite(start) || !Number.isFinite(end) || end < start || end > observed || !links || invalidText) {
-      invalid++;
-      continue;
-    }
-    const text = (name: string) => typeof row[name] === 'string' ? row[name] : '';
-    issues.push({
-      id, source, key, parentKey: text('parent_key').trim(),
-      project: text('project_key'), summary: text('summary'), type: text('issue_type'),
-      status: text('status'), category: text('status_category'), assignee: text('assignee'),
-      priority: text('priority'), start, end, observed, resolved,
-      links,
-      fields: row, searchValues: searchableValues(row),
-    });
-  }
-  issues.sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }) || a.source.localeCompare(b.source));
-  return { issues: issues.slice(0, maxIssues), invalid, truncated: issues.length > maxIssues, rawRows };
-}
+import { selectMetadata } from './data';
+import type { CollapseMode, Issue, IssueNode, Relationship, Rollup, SearchField, SearchFieldOption, TreeRow } from './types';
 
 export function buildTree(issues: Issue[]) {
   const nodes = new Map<string, IssueNode>(issues.map((issue) => [issue.id, { issue, children: [] }]));
@@ -139,7 +9,7 @@ export function buildTree(issues: Issue[]) {
     if (nodes.has(parent)) { node.parent = parent; }
     else { node.warning = `Parent ${node.issue.parentKey} is not in the query result`; }
   }
-  // Follow parent pointers iteratively: even malformed, very deep trees cannot overflow the stack.
+  // Iterative cycle detection also handles trees deeper than the call stack allows.
   const done = new Set<string>();
   for (const id of nodes.keys()) {
     const path = new Set<string>();
@@ -216,13 +86,14 @@ export function expansionForDepth(tree: ReturnType<typeof buildTree>, rootKey: s
   return expansion;
 }
 
-export function collapseCompleted(tree: ReturnType<typeof buildTree>, rollups: Map<string, Rollup>) {
+export function collapseCompleted(tree: ReturnType<typeof buildTree>, rollups: Map<string, Rollup>, mode: CollapseMode = 'parent-or-descendants') {
   const expansion = new Map<string, boolean>();
   for (const [id, node] of tree.nodes) {
     const rollup = rollups.get(id);
-    // A resolved parent is operationally complete even when Jira leaves a child
-    // open; the rollup badge keeps that exception visible without expanding it.
-    const completed = node.issue.resolved || (!!rollup && rollup.descendants > 0 && rollup.doneDescendants === rollup.descendants);
+    const descendantsDone = !!rollup && rollup.doneDescendants === rollup.descendants;
+    const completed = mode === 'parent' ? node.issue.resolved
+      : mode === 'subtree' ? node.issue.resolved && descendantsDone
+        : node.issue.resolved || (descendantsDone && rollup.descendants > 0);
     expansion.set(id, !completed);
   }
   return expansion;
@@ -238,13 +109,14 @@ export function buildRelationships(tree: ReturnType<typeof buildTree>, rows: Tre
       const targetID = JSON.stringify([issue.source, link.targetKey]);
       const target = tree.nodes.get(targetID);
       if (!target) { continue; }
-      const fromId = link.direction === 'outward' ? issue.id : targetID;
-      const toId = link.direction === 'outward' ? targetID : issue.id;
+      const directed = link.direction !== 'undirected';
+      const [fromId, toId] = !directed ? [issue.id, targetID].sort()
+        : link.direction === 'outward' ? [issue.id, targetID] : [targetID, issue.id];
       if (!rowIndex.has(fromId) || !rowIndex.has(toId)) { continue; }
-      const edge = JSON.stringify([fromId, toId, link.type]);
+      const edge = JSON.stringify([fromId, toId, link.type, directed]);
       if (seen.has(edge)) { continue; }
       seen.add(edge);
-      relationships.push({ fromId, toId, fromRow: rowIndex.get(fromId)!, toRow: rowIndex.get(toId)!, label: link.type || link.display });
+      relationships.push({ fromId, toId, fromRow: rowIndex.get(fromId)!, toRow: rowIndex.get(toId)!, label: link.type, directed });
     }
   }
   return relationships;
@@ -303,7 +175,7 @@ export function selectRows(
     exportRows, issues: exportRows.map(({ node }) => node.issue) };
 }
 
-export function exportRecords(rows: Array<{ node: IssueNode; depth: number }>, rollups: Map<string, Rollup>) {
+export function exportRecords(rows: Array<{ node: IssueNode; depth: number }>, rollups: Map<string, Rollup>, metadataFields = '') {
   return rows.map(({ node, depth }) => {
     const rollup = rollups.get(node.issue.id) ?? { descendants: 0, doneDescendants: 0, staleDescendants: 0 };
     return {
@@ -326,6 +198,7 @@ export function exportRecords(rows: Array<{ node: IssueNode; depth: number }>, r
       child_stale_count: rollup.staleDescendants,
       source: node.issue.source,
       links: node.issue.links.map((link) => ({ ...link })),
+      custom_fields: selectMetadata(node.issue, metadataFields),
     };
   });
 }

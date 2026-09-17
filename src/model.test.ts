@@ -1,6 +1,7 @@
 import type { DataFrame } from '@grafana/data';
 import { describe, expect, it } from 'vitest';
-import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, discoverSearchFields, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
+import { discoverSearchFields, readIssues } from './data';
+import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, recordsToCsv, selectRows } from './model';
 import type { JiraDataRow } from './types';
 
 const observed = '2026-09-06T12:00:00Z';
@@ -336,7 +337,7 @@ describe('real parent hierarchy', () => {
     ]);
     const tree = buildTree(data);
     const rows = selectRows(tree, '', '', [], new Map(), 2).rows;
-    expect(buildRelationships(tree, rows)).toEqual([{ fromId: data[0].id, toId: data[1].id, fromRow: 0, toRow: 1, label: 'blocks' }]);
+    expect(buildRelationships(tree, rows)).toEqual([{ fromId: data[0].id, toId: data[1].id, fromRow: 0, toRow: 1, label: 'blocks', directed: true }]);
   });
 });
 
