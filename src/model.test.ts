@@ -1,6 +1,6 @@
 import type { DataFrame } from '@grafana/data';
 import { describe, expect, it } from 'vitest';
-import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
+import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, discoverSearchFields, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
 
 const observed = '2026-09-06T12:00:00Z';
 const created = '2026-06-01T12:00:00Z';
@@ -75,6 +75,72 @@ describe('issue observation data contract', () => {
     const result = readIssues([logs([record('OPS-1'), record('OPS-2')])], 1);
     expect(result.truncated).toBe(true);
     expect(result.issues).toHaveLength(1);
+  });
+});
+
+describe('discovered searchable fields', () => {
+  it.each([['table', table], ['labels', logs]] as const)('discovers sparse custom fields in %s frames and retains ancestor context', (_, frame) => {
+    const data = readIssues([frame([record('PM-1'), record('OPS-1', 'PM-1', { company: 'Acme' })])], 100).issues;
+    expect(discoverSearchFields(data)).toContainEqual({ value: 'field:company', field: 'company', label: 'Company' });
+    const tree = buildTree(data);
+    for (const field of ['all', 'field:company'] as const) {
+      const result = selectRows(tree, '', 'aCmE', [], new Map(), 0, undefined, field);
+      expect(result.matchingCount).toBe(1);
+      expect(result.rows.map((row) => [row.node.issue.key, row.context])).toEqual([['PM-1', true], ['OPS-1', false]]);
+    }
+  });
+
+  it('uses only latest values and removes fields absent from the latest observation', () => {
+    const data = readIssues([logs([record('OPS-1', '', { company: 'Acme' })]), table([
+      record('OPS-1', '', { company: 'Previous', legacy: 'Legacy company', sync_ts: '2026-09-01T00:00:00Z' }),
+    ])], 100).issues;
+    expect(data[0].fields.company).toBe('Acme');
+    expect(discoverSearchFields(data).map((field) => field.field)).not.toContain('legacy');
+    expect(selectRows(buildTree(data), '', 'Previous', [], new Map(), 2).matchingCount).toBe(0);
+    const cleared = issues([
+      record('OPS-1', '', { company: 'Acme', sync_ts: '2026-09-01T00:00:00Z' }), record('OPS-1'),
+    ]);
+    expect(discoverSearchFields(cleared).map((field) => field.field)).not.toContain('company');
+  });
+
+  it('searches numbers, booleans and scalar arrays without exposing objects or structural fields', () => {
+    const data = issues([record('OPS-1', '', {
+      company: ['Acme', 'Example'], score: 0, active: false,
+      nested: { company: 'Hidden' }, mixed: ['Hidden', {}], empty: [], absent: null,
+      _msg: 'Hidden', issue_links: [{ target_key: 'OPS-2', type: 'Hidden', direction: 'outward' }],
+    })]);
+    const names = discoverSearchFields(data).map((field) => field.field);
+    expect(names).toEqual(['issue_key', 'summary', 'status', 'assignee', 'issue_type', 'active', 'company', 'project_key', 'score']);
+    const tree = buildTree(data);
+    expect(selectRows(tree, '', 'example', [], new Map(), 2, undefined, 'field:company').matchingCount).toBe(1);
+    expect(selectRows(tree, '', '0', [], new Map(), 2, undefined, 'field:score').matchingCount).toBe(1);
+    expect(selectRows(tree, '', 'false', [], new Map(), 2, undefined, 'field:active').matchingCount).toBe(1);
+    expect(selectRows(tree, '', 'Hidden', [], new Map(), 2).matchingCount).toBe(0);
+    expect(selectRows(tree, '', 'jira-test-data', [], new Map(), 2).matchingCount).toBe(0);
+    expect(data[0].fields.nested).toEqual({ company: 'Hidden' });
+  });
+
+  it('applies the incoming-name allowlist to both individual and All fields searches', () => {
+    const data = issues([record('OPS-1', '', { company: 'Acme', summary: 'Secret phrase' })]);
+    const tree = buildTree(data);
+    const enabled = discoverSearchFields(data, ' company, issue_key, company, missing, ');
+    expect(enabled.map((field) => field.field)).toEqual(['issue_key', 'company']);
+    expect(selectRows(tree, '', 'Acme', [], new Map(), 2, undefined, 'all', enabled).matchingCount).toBe(1);
+    expect(selectRows(tree, '', 'Secret', [], new Map(), 2, undefined, 'all', enabled).matchingCount).toBe(0);
+    expect(selectRows(tree, '', 'Secret', [], new Map(), 2, undefined, 'summary', enabled).matchingCount).toBe(0);
+    const missing = discoverSearchFields(data, 'missing');
+    expect(missing).toEqual([]);
+    expect(selectRows(tree, '', 'Acme', [], new Map(), 2, undefined, 'all', missing).matchingCount).toBe(0);
+  });
+
+  it('keeps custom names distinct from internal identifiers and the All fields option', () => {
+    const data = issues([record('OPS-1', '', { key: 'Custom key', all: 'Custom all', observed: 'Custom observation' })]);
+    const tree = buildTree(data);
+    expect(data[0].key).toBe('OPS-1');
+    expect(data[0].observed).toBe(Date.parse(observed));
+    expect(selectRows(tree, '', 'Custom key', [], new Map(), 2, undefined, 'field:key').matchingCount).toBe(1);
+    expect(selectRows(tree, '', 'Custom key', [], new Map(), 2, undefined, 'key').matchingCount).toBe(0);
+    expect(selectRows(tree, '', 'Custom all', [], new Map(), 2, undefined, 'field:all').matchingCount).toBe(1);
   });
 });
 

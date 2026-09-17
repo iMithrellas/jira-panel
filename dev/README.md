@@ -85,6 +85,7 @@ summaries are synthetic; Jira links use the reserved `jira.example.invalid` doma
 - `OPS-900001` and `REL-900002`: missing parents; `REL-900001` is a child of the first orphan.
 - Stale observations are three days old, beyond `staleHours=24` but within the 30-day query window.
 - `OPS-900003`: a seven-day-old resolved revision followed by the latest reopened state, with no `resolved_at` on the latest row.
+- `OPS-900003` also has `company=Acme` to demonstrate discovery and searching of a sparse custom field.
 - Every 17th issue has an older revision; PM-100 also has an exact duplicate. Older revisions are ingested after current rows to test timestamp-based selection rather than arrival order.
 - PM-100 includes synthetic `blocks` and `clones` relationships; the first two multi-child workstreams also have `blocks`, `relates to`, `duplicates`, and `clones` links for arrow routing.
 
@@ -127,6 +128,7 @@ Each observation has these fields:
 | `status`, `status_category` | Display status; category `new`, `indeterminate`, or `done` |
 | `priority`, `assignee` | Display strings; empty assignee means unassigned |
 | `issue_links` | Optional normalized relationship array with target key, canonical type, current-side display label, and inward/outward direction |
+| `company` | Optional custom search field; `Acme` on OPS-900003 |
 
 The insertion request also supplies `_msg` as a copy of `summary`, leaving the
 mandatory `summary` field intact. The query retains all contract fields:
@@ -135,7 +137,7 @@ mandatory `summary` field intact. The query retains all contract fields:
 {app="jira-panel-fixture", instance="demo", environment="development"} kind:="issue_state"
 | stats by (app, instance, environment, issue_key) row_max(_time) as row
 | unpack_json from row
-| fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee
+| fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee, company
 | sort by (issue_key)
 | limit 10001
 ```

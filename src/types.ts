@@ -6,13 +6,20 @@ export interface JiraOptions {
   maxIssues: number;
   rowHeight: number;
   labelWidth: number;
+  searchableFields: string;
 }
 
-export type SearchField = 'all' | 'key' | 'summary' | 'status' | 'assignee' | 'type';
+export type SearchField = 'all' | 'key' | 'summary' | 'status' | 'assignee' | 'type' | `field:${string}`;
+
+export interface SearchFieldOption {
+  value: Exclude<SearchField, 'all'>;
+  field: string;
+  label: string;
+}
 
 export const defaults: JiraOptions = {
   rootKey: '', initialDepth: 2, staleHours: 24, jiraBaseUrl: '',
-  maxIssues: 10000, rowHeight: 36, labelWidth: 420,
+  maxIssues: 10000, rowHeight: 36, labelWidth: 420, searchableFields: '',
 };
 
 export interface Issue {
@@ -32,6 +39,8 @@ export interface Issue {
   observed: number;
   resolved: boolean;
   links: IssueLink[];
+  fields: Record<string, unknown>;
+  searchValues: Partial<Record<Exclude<SearchField, 'all'>, string[]>>;
 }
 
 export interface IssueLink {

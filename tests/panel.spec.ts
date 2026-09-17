@@ -65,6 +65,20 @@ test('loads real VictoriaLogs results, expands parents and shows observed end de
   await expect(page.getByText('Source: jira-panel-fixture / demo / development', { exact: true })).toBeVisible();
 });
 
+test('discovers and searches a sparse company field from the query result', async ({ page }) => {
+  const field = page.getByRole('combobox', { name: 'Search field' });
+  const search = page.getByRole('textbox', { name: 'Search tickets' });
+  await expect(field.locator('option', { hasText: /^Company$/ })).toHaveCount(1);
+  await search.fill('acme');
+  await expect(page.getByTestId('issue-count')).toContainText('1 tickets / 2 rows');
+  await expect(page.getByRole('button', { name: 'Details for OPS-900003', exact: true })).toBeVisible();
+  await field.selectOption('field:company');
+  await expect(search).toHaveAttribute('placeholder', 'Search company...');
+  await expect(page.getByTestId('issue-count')).toContainText('1 tickets / 2 rows');
+  await field.selectOption('summary');
+  await expect(page.getByText('No matching tickets', { exact: true })).toBeVisible();
+});
+
 test('exports the filtered hierarchy as CSV and JSON', async ({ page }) => {
   await page.getByRole('textbox', { name: 'Parent ticket', exact: true }).fill('PM-100');
   const csvDownload = page.waitForEvent('download');

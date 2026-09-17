@@ -1,5 +1,42 @@
 import type { DataFrame } from '@grafana/data';
-import type { Issue, IssueLink, IssueNode, Relationship, Rollup, SearchField, TreeRow } from './types';
+import type { Issue, IssueLink, IssueNode, Relationship, Rollup, SearchField, SearchFieldOption, TreeRow } from './types';
+
+const coreSearchFields: SearchFieldOption[] = [
+  { value: 'key', field: 'issue_key', label: 'Key' },
+  { value: 'summary', field: 'summary', label: 'Summary' },
+  { value: 'status', field: 'status', label: 'Status' },
+  { value: 'assignee', field: 'assignee', label: 'Assignee' },
+  { value: 'type', field: 'issue_type', label: 'Issue type' },
+];
+const structuralFields = new Set([
+  'app', 'instance', 'environment', 'kind', 'parent_key', 'issue_links',
+  'created_at', 'resolved_at', 'sync_ts', '_time', 'Time', 'time',
+  'is_resolved', 'status_category', 'labels', 'Line', 'ts', 'id',
+]);
+
+function searchableValues(row: Record<string, unknown>): Issue['searchValues'] {
+  const values: Issue['searchValues'] = {};
+  for (const [name, value] of Object.entries(row)) {
+    if (structuralFields.has(name) || name.startsWith('_')) { continue; }
+    const entries = Array.isArray(value) ? value : [value];
+    if (!entries.length || !entries.every((entry) => typeof entry === 'string' || typeof entry === 'boolean' ||
+      (typeof entry === 'number' && Number.isFinite(entry)))) { continue; }
+    const key = coreSearchFields.find((field) => field.field === name)?.value ?? `field:${name}`;
+    values[key] = entries.map(String);
+  }
+  return values;
+}
+
+export function discoverSearchFields(issues: Issue[], configured = ''): SearchFieldOption[] {
+  const names = new Set(issues.flatMap((issue) => Object.keys(issue.searchValues)));
+  const custom = [...names].filter((name) => name.startsWith('field:')).sort().map((value): SearchFieldOption => {
+    const field = value.slice(6);
+    const text = field.replace(/[_-]+/g, ' ');
+    return { value: value as `field:${string}`, field, label: text.charAt(0).toUpperCase() + text.slice(1) };
+  });
+  const allowed = new Set(configured.split(',').map((field) => field.trim()).filter(Boolean));
+  return [...coreSearchFields, ...custom].filter((option) => !allowed.size || allowed.has(option.field));
+}
 
 function timestamp(value: unknown): number {
   if (typeof value === 'number') {
@@ -35,7 +72,7 @@ function readLinks(value: unknown): IssueLink[] {
 
 // Accept VictoriaLogs' native logs frames (a labels object per row) and flat tables.
 export function readIssues(frames: DataFrame[], maxIssues: number) {
-  const latest = new Map<string, Record<string, unknown>>();
+  const latest = new Map<string, { row: Record<string, unknown>; id: string; source: string; key: string; observed: number }>();
   let invalid = 0;
   let rawRows = 0;
   for (const frame of frames) {
@@ -54,28 +91,29 @@ export function readIssues(frames: DataFrame[], maxIssues: number) {
       const source = JSON.stringify([row.app ?? '', row.instance ?? '', row.environment ?? '']);
       const id = JSON.stringify([source, key]);
       const previous = latest.get(id);
-      if (!previous || observed > Number(previous.observed)) {
-        latest.set(id, { ...row, id, source, key, observed });
+      if (!previous || observed > previous.observed) {
+        latest.set(id, { row, id, source, key, observed });
       }
     }
   }
   const issues: Issue[] = [];
-  for (const row of latest.values()) {
+  for (const { row, id, source, key, observed } of latest.values()) {
     const resolved = row.is_resolved === true || row.is_resolved === 'true';
     const hasResolutionFlag = resolved || row.is_resolved === false || row.is_resolved === 'false';
     const start = timestamp(row.created_at);
-    const end = resolved ? timestamp(row.resolved_at) : Number(row.observed);
+    const end = resolved ? timestamp(row.resolved_at) : observed;
     if (!hasResolutionFlag || !Number.isFinite(start) || !Number.isFinite(end) || end < start) {
       invalid++;
       continue;
     }
     const text = (name: string) => String(row[name] ?? '');
     issues.push({
-      id: text('id'), source: text('source'), key: text('key'), parentKey: text('parent_key'),
+      id, source, key, parentKey: text('parent_key'),
       project: text('project_key'), summary: text('summary'), type: text('issue_type'),
       status: text('status'), category: text('status_category'), assignee: text('assignee'),
-      priority: text('priority'), start, end, observed: Number(row.observed), resolved,
+      priority: text('priority'), start, end, observed, resolved,
       links: readLinks(row.issue_links),
+      fields: row, searchValues: searchableValues(row),
     });
   }
   issues.sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }) || a.source.localeCompare(b.source));
@@ -203,7 +241,8 @@ export function buildRelationships(tree: ReturnType<typeof buildTree>, rows: Tre
 
 export function selectRows(
   tree: ReturnType<typeof buildTree>, rootKey: string, search: string, projects: string[],
-  expansion: Map<string, boolean>, initialDepth: number, rootSource?: string, searchField: SearchField = 'all'
+  expansion: Map<string, boolean>, initialDepth: number, rootSource?: string, searchField: SearchField = 'all',
+  enabledFields?: SearchFieldOption[]
 ) {
   const roots = rootIDs(tree, rootKey, rootSource);
   const scoped: Array<{ id: string; depth: number }> = [];
@@ -220,7 +259,9 @@ export function selectRows(
   const included = new Set<string>();
   for (const { id } of scoped) {
     const issue = tree.nodes.get(id)!.issue;
-    const searchable = searchField === 'all' ? [issue.key, issue.summary, issue.status, issue.assignee, issue.type] : [issue[searchField]];
+    const searchable = searchField === 'all'
+      ? enabledFields ? enabledFields.flatMap(({ value }) => issue.searchValues[value] ?? []) : Object.values(issue.searchValues).flatMap((values) => values ?? [])
+      : enabledFields && !enabledFields.some(({ value }) => value === searchField) ? [] : issue.searchValues[searchField] ?? [];
     if ((!projects.length || projects.includes(issue.project)) &&
       (!query || searchable.some((s) => s.toLowerCase().includes(query)))) {
       matches.add(id);

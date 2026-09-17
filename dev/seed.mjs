@@ -92,6 +92,7 @@ try {
   const reopened = addIssue('OPS', primary.issue_key, 'Demo reopened issue', 'Bug', 65, { key: 'OPS-900003', resolved: false });
   reopened.status = 'Reopened';
   reopened.status_category = 'indeterminate';
+  reopened.company = 'Acme';
   function relate(source, target, type, outward, inward) {
     source.issue_links = [...(source.issue_links ?? []), { target_key: target.issue_key, type, display: outward, direction: 'outward' }];
     target.issue_links = [...(target.issue_links ?? []), { target_key: source.issue_key, type, display: inward, direction: 'inward' }];

@@ -9,7 +9,7 @@ older root-level Grafana 11 demo is not the plugin development environment.
 
 - Parent-subtree focus or all-project browsing, including cross-project descendants.
 - Expand/collapse and virtualized fixed-height rows. Only visible rows plus overscan are mounted.
-- Search by key, summary, assignee, status or issue type, with an `All fields` default and a field selector. Multi-project filters retain ancestor context.
+- Search by key, summary, assignee, status, issue type, or discovered custom fields such as company, with an `All fields` default and a field selector. Multi-project filters retain ancestor context.
 - Creation-to-resolution bars for resolved tickets; creation-to-last-observation bars for open tickets.
 - Descendant rollups on parent rows: child count, resolved child count, and stale child count.
 - Colored routed directional arrows anchored to issue bars, with boxed labels for Jira links such as `blocks`, `clones`, `duplicates`, `relates to`, and custom link types.
@@ -145,6 +145,34 @@ Absolute Grafana time ranges disable relative panel overrides.
 | Maximum issues | 10,000 | Cap with a visible warning when an extra issue is returned |
 | Row height | 36px | Fixed row size used for virtualization |
 | Ticket column width | 420px | Width of the hierarchy column; bounded to retain a timeline |
+| Searchable fields | Empty | Comma-separated incoming field names; empty enables built-in and discovered fields |
+
+### Custom Search Fields
+
+Additional fields returned by the query are retained from each ticket's latest
+observation. Text, finite numbers, booleans, and non-empty arrays of those values
+are automatically available in **Search in**. For example, a `company` column with
+the value `Acme` adds **Company** to the selector and matches an **All fields**
+search for `Acme`. Fields are discovered across the returned tickets, even when
+some tickets lack them. Matching is case-insensitive substring search; arrays
+match if any element matches. Nested objects and arrays containing objects or nulls
+are excluded; flatten the desired values into named columns in your query.
+
+The existing five fields retain their friendly names. Other fields, including
+`project_key` and `priority`, are discovered automatically. Source namespace,
+record kind, parent/link data, lifecycle timestamps and flags, status category,
+known log-frame metadata (`labels`, `Line`, `Time`, `time`, `ts`, `id`), and names
+beginning with `_` are excluded from search discovery.
+
+To restrict both the selector and **All fields**, set **Searchable fields** to
+incoming names such as `issue_key, summary, company`. Names are case-sensitive;
+use `issue_key` and `issue_type` rather than their display labels. Only eligible
+fields are enabled; a list with no available names searches no fields. If a
+selected field disappears after a refresh or settings change, the selector falls
+back to **All fields**. Historical values are never searched.
+
+Retain custom fields through query projections and Grafana transformations. For
+example, add `company` to the `| fields` list in the VictoriaLogs query above.
 
 Toolbar changes are local, not saved dashboard settings. Configure the initial
 Parent in panel options to persist it, or use a dashboard variable there. The

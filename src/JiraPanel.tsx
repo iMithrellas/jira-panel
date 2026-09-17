@@ -2,20 +2,11 @@ import { css } from '@emotion/css';
 import { dateTimeFormat, type GrafanaTheme2, type PanelProps } from '@grafana/data';
 import { useStyles2, useTheme2 } from '@grafana/ui';
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
+import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, discoverSearchFields, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
 import { defaults, type Issue, type JiraOptions, type SearchField } from './types';
 
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
   Number.isFinite(value) ? Math.max(min, Math.min(max, Number(value))) : fallback;
-
-const searchFieldOptions: Array<{ value: SearchField; label: string }> = [
-  { value: 'all', label: 'All fields' },
-  { value: 'key', label: 'Key' },
-  { value: 'summary', label: 'Summary' },
-  { value: 'status', label: 'Status' },
-  { value: 'assignee', label: 'Assignee' },
-  { value: 'type', label: 'Issue type' },
-];
 
 export function JiraPanel({ data, options, width, height, timeZone, replaceVariables }: PanelProps<JiraOptions>) {
   const theme = useTheme2();
@@ -45,10 +36,12 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
 
   // Cache the O(n) data work so scrolling only renders the small virtual window.
   const parsed = useMemo(() => readIssues(data.series, maxIssues), [data.series, maxIssues]);
+  const searchFieldOptions = useMemo(() => discoverSearchFields(parsed.issues, options.searchableFields), [parsed.issues, options.searchableFields]);
+  const activeSearchField = searchFieldOptions.some(({ value }) => value === searchField) ? searchField : 'all';
   const tree = useMemo(() => buildTree(parsed.issues), [parsed.issues]);
   const rollups = useMemo(() => computeRollups(tree, clock, staleMs), [tree, clock, staleMs]);
-  const selection = useMemo(() => selectRows(tree, root, deferredSearch, projects, expansion, initialDepth, rootSource, searchField),
-    [tree, root, deferredSearch, projects, expansion, initialDepth, rootSource, searchField]);
+  const selection = useMemo(() => selectRows(tree, root, deferredSearch, projects, expansion, initialDepth, rootSource, activeSearchField, searchFieldOptions),
+    [tree, root, deferredSearch, projects, expansion, initialDepth, rootSource, activeSearchField, searchFieldOptions]);
   const availableProjects = useMemo(() => [...new Set(parsed.issues.map((issue) => issue.project))].filter(Boolean).sort(), [parsed.issues]);
   const sourceCount = useMemo(() => new Set(parsed.issues.map((issue) => issue.source)).size, [parsed.issues]);
   const fittedRange = useMemo(() => fitRange(selection.issues), [selection.issues]);
@@ -80,6 +73,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
   }, [selection.issues, clock, staleMs, tree]);
 
   useEffect(() => { setRoot(configuredRoot); setRootSource(undefined); }, [configuredRoot]);
+  useEffect(() => { setSearchField(activeSearchField); }, [activeSearchField]);
   useEffect(() => {
     setExpansion(new Map());
     setRangeOverride(undefined);
@@ -90,7 +84,7 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
     if (viewport.current) { viewport.current.scrollTop = 0; }
     setScroll((previous) => ({ ...previous, top: 0 }));
     setMatchCursor(0);
-  }, [root, rootSource, deferredSearch, projects, searchField]);
+  }, [root, rootSource, deferredSearch, projects, activeSearchField, searchFieldOptions]);
   useEffect(() => {
     const element = viewport.current;
     if (!element) { return; }
@@ -220,11 +214,12 @@ export function JiraPanel({ data, options, width, height, timeZone, replaceVaria
           <input aria-label="Parent ticket" placeholder="All ticket trees" value={root} onChange={(event) => { setRoot(event.target.value); setRootSource(undefined); }} />
         </label>
         <label className={styles.searchField}>Search in
-          <select aria-label="Search field" value={searchField} onChange={(event) => setSearchField(event.target.value as SearchField)}>
-            {searchFieldOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          <select aria-label="Search field" value={activeSearchField} onChange={(event) => setSearchField(event.target.value as SearchField)}>
+            <option value="all">All fields</option>
+            {searchFieldOptions.map((option) => <option key={option.value} value={option.value} title={option.field}>{option.label}</option>)}
           </select>
         </label>
-        <input className={styles.search} aria-label="Search tickets" placeholder={searchField === 'all' ? 'Search all fields...' : `Search ${searchFieldOptions.find((option) => option.value === searchField)?.label.toLowerCase()}...`} value={search} onChange={(event) => setSearch(event.target.value)} />
+        <input className={styles.search} aria-label="Search tickets" placeholder={activeSearchField === 'all' ? 'Search all fields...' : `Search ${searchFieldOptions.find((option) => option.value === activeSearchField)?.label.toLowerCase()}...`} value={search} onChange={(event) => setSearch(event.target.value)} />
         <details className={styles.projects}>
           <summary>Projects {projects.length ? `(${projects.length})` : '(all)'}</summary>
           <div className={styles.projectMenu}>
