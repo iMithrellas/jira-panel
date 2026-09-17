@@ -85,16 +85,17 @@ observation for each `issue_key` within a source namespace, so every observation
 must be a complete current-state record rather than a partial update. How these
 records are collected and delivered to Grafana is outside the scope of this plugin.
 
-The panel accepts flat table DataFrames or native VictoriaLogs frames with a
-per-row `labels` object. The development dashboard uses Grafana's Extract fields
-transformation (`labels`, JSON, replace all) to demonstrate a flat table.
+The panel accepts flat table DataFrames from any datasource, or logs frames with a
+per-row `labels` object or JSON string. Direct fields take precedence over fields
+inside `labels`. The development dashboard uses VictoriaLogs as an example and
+passes its native frames directly; no Extract fields transformation is required.
 
 | Field | Meaning |
 | --- | --- |
 | `issue_key` | Required ticket identity |
 | `app`, `instance`, `environment` | Optional source namespace; retain through queries and transformations when used |
 | `created_at` | Required ISO 8601 creation time, or numeric epoch milliseconds |
-| `sync_ts` | Observation time; falls back to `_time` or Grafana's `Time` field |
+| `sync_ts` | Observation time; falls back to `_time` or Grafana's `Time` field when absent or null |
 | `is_resolved` | Required boolean or string `"true"` / `"false"`; not inferred from status |
 | `resolved_at` | Required valid timestamp if resolved; ignored if open/reopened |
 | `parent_key` | Actual Jira parent; absent or empty for roots |
@@ -102,6 +103,39 @@ transformation (`labels`, JSON, replace all) to demonstrate a flat table.
 | `status`, `status_category` | Label and color (`new`, `indeterminate`, `done`) |
 | `assignee`, `priority` | Search/detail metadata |
 | `issue_links` | Optional normalized relationships: `target_key`, canonical `type`, current-side `display`, and `direction` |
+
+At least one observation timestamp is required. Use numeric epoch milliseconds,
+`YYYY-MM-DD` dates (UTC midnight), or ISO timestamps with seconds and an explicit
+timezone (`Z` or an offset). Numeric strings and timezone-free date-times are
+rejected. A supplied empty or invalid timestamp is rejected rather than replaced
+by another time field. Dates must be representable and satisfy
+`created_at <= end <= observation time`, where end is `resolved_at` for resolved
+tickets and the observation time otherwise.
+
+Identity, namespace and the listed display fields must be strings when supplied;
+optional fields can be absent or null. `issue_links` accepts an array or
+JSON-encoded array of links with nonempty string `target_key` and `type`,
+`direction` equal to `inward` or `outward`, and optional string `display`.
+Absent, null or empty-string links mean no relationships. Malformed contract
+fields or links exclude the row with a visible warning. Rows with valid identities,
+namespaces and observation times are deduplicated before full validation, so a
+malformed newest row does not silently restore stale ticket state. Equal
+observation timestamps retain the first row received. Additional custom fields
+remain available according to the [search-field rules](#custom-search-fields).
+
+A minimal table row needs no exporter metadata or source namespace:
+
+```json
+{
+  "issue_key": "OPS-42",
+  "created_at": "2026-09-01T10:00:00Z",
+  "sync_ts": "2026-09-15T12:00:00Z",
+  "is_resolved": false
+}
+```
+
+Without namespace fields, all rows share one source. Supply them when combining
+Jira sites that might have identical ticket keys.
 
 Example LogsQL for records stored in VictoriaLogs; replace the selector with labels
 that identify your data:
@@ -128,7 +162,8 @@ panel's project filters to preserve ancestor context. For very large Jira datase
 scope the query to a complete set of relevant projects rather than silently
 truncating. The panel caps displayed issues at 50,000 even if configured higher.
 
-The time picker selects **observations**, not creation dates. Choose a lookback
+The example query uses the time picker for **observations**, not creation dates;
+your own query controls its time semantics. For observation queries choose a lookback
 longer than the sync interval plus the duration of a full sync and any expected
 outages. The development panel overrides this to 30 days; it then fits the full
 lifetimes of the returned tickets. Local timeline zoom never changes the query.
@@ -185,6 +220,8 @@ entering a key matches that key in all returned source namespaces. **Focus subtr
 in a ticket's details retains its source identity. Relationships never cross source
 namespaces. A single panel has one Jira base URL; scope to a single Jira site when
 combining data from multiple producers or sites.
+CSV prefixes potentially executable spreadsheet text with an apostrophe and stores
+structured link cells as JSON; JSON export preserves the original text values.
 
 ## Validation
 
@@ -219,7 +256,7 @@ ID via `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=easit-jira-panel` and restart
 Grafana. Production distribution requires your approved signing/install process;
 this repository does not include a signing key or a signed release.
 
-Add a Jira Hierarchy panel using your VictoriaLogs datasource and the query above.
+Add a Jira Hierarchy panel using any datasource and a query matching the contract above.
 Any new dashboard for this project should live in **Operations**. The development
 dashboard is not directly portable without changing its datasource UID, demo
 source selector and Jira URL. Existing shared dashboards were not modified.

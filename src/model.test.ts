@@ -1,6 +1,7 @@
 import type { DataFrame } from '@grafana/data';
 import { describe, expect, it } from 'vitest';
 import { barPosition, buildRelationships, buildTree, collapseCompleted, computeRollups, discoverSearchFields, expansionForDepth, exportRecords, fitRange, jiraLink, readIssues, recordsToCsv, selectRows } from './model';
+import type { JiraDataRow } from './types';
 
 const observed = '2026-09-06T12:00:00Z';
 const created = '2026-06-01T12:00:00Z';
@@ -19,6 +20,77 @@ const table = (rows: Record<string, unknown>[]): DataFrame => ({
 const issues = (rows: Record<string, unknown>[]) => readIssues([logs(rows)], 10000).issues;
 
 describe('issue observation data contract', () => {
+  it('accepts a minimal ordinary table with no exporter metadata', () => {
+    const row = { issue_key: 'OPS-1', created_at: created, sync_ts: observed, is_resolved: false } satisfies JiraDataRow;
+    expect(readIssues([table([row])], 10)).toMatchObject({ invalid: 0, issues: [{ key: 'OPS-1', source: '["","",""]', resolved: false }] });
+  });
+
+  it('excludes malformed identities, sources and optional values without crashing valid rows', () => {
+    const bad = { toString: null };
+    const result = readIssues([table([
+      record('OPS-1', '', { issue_key: bad }), record('OPS-2', '', { instance: bad }),
+      record('OPS-3', '', { summary: bad }), record('OPS-4', '', { parent_key: [] }),
+      record('OPS-5', '', { issue_links: [{ target_key: 'OPS-6', type: bad, direction: 'outward' }] }),
+      record('OPS-6', '', { issue_links: '{broken' }), record('OPS-7'),
+    ])], 10);
+    expect(result.invalid).toBe(6);
+    expect(result.issues.map((issue) => issue.key)).toEqual(['OPS-7']);
+  });
+
+  it('does not resurrect an older row when the latest optional text or links are malformed', () => {
+    for (const extra of [{ summary: { toString: null } }, { issue_links: 'broken' }]) {
+      const result = readIssues([table([record('OPS-1'), record('OPS-1', '', { ...extra, sync_ts: '2026-09-07T00:00:00Z' })])], 10);
+      expect(result.issues).toHaveLength(0);
+      expect(result.invalid).toBe(1);
+    }
+  });
+
+  it('honors direct fields over JSON labels and ignores prototype properties', () => {
+    const frame = table([{ labels: JSON.stringify(record('OPS-1')), summary: 'Direct', is_resolved: false }]);
+    const issue = readIssues([frame], 10).issues[0];
+    expect(issue.summary).toBe('Direct');
+    expect(issue.searchValues.summary).toEqual(['Direct']);
+    expect(readIssues([table([{ labels: '{"__proto__":{"issue_key":"OPS-1","created_at":0,"sync_ts":1,"is_resolved":false}}' }])], 10).issues).toHaveLength(0);
+  });
+
+  it('accepts epoch zero and rejects unrepresentable dates and inconsistent chronology', () => {
+    const result = readIssues([table([
+      record('OPS-1', '', { created_at: 0, sync_ts: 0, Time: 500 }),
+      record('OPS-2', '', { sync_ts: 1e20 }),
+      record('OPS-3', '', { is_resolved: true, resolved_at: 1e20 }),
+      record('OPS-4', '', { is_resolved: true, resolved_at: '2026-09-07T00:00:00Z' }),
+      record('OPS-5', '', { is_resolved: true, created_at: '2026-09-07T00:00:00Z', resolved_at: '2026-09-08T00:00:00Z' }),
+    ])], 10);
+    expect(result.invalid).toBe(4);
+    expect(result.issues[0]).toMatchObject({ start: 0, end: 0, observed: 0 });
+    const tree = buildTree(result.issues);
+    expect(() => exportRecords(selectRows(tree, '', '', [], new Map(), 2).exportRows, new Map())).not.toThrow();
+  });
+
+  it.each(['0', '123', '2026-02-31', '2026-09-01T10:00:00', '2026-13-01'])('rejects ambiguous or normalized invalid dates: %s', (sync_ts) => {
+    const result = readIssues([table([record('OPS-1', '', { created_at: 0, sync_ts })])], 10);
+    expect(result.invalid).toBe(1);
+    expect(result.issues).toHaveLength(0);
+  });
+
+  it('falls back only for absent observation timestamps', () => {
+    for (const sync_ts of [null, undefined]) {
+      expect(issues([record('OPS-1', '', { sync_ts, _time: observed })])[0].observed).toBe(Date.parse(observed));
+    }
+    for (const sync_ts of ['', 'broken']) {
+      expect(issues([record('OPS-1', '', { sync_ts, _time: observed })])).toHaveLength(0);
+    }
+  });
+
+  it('accepts timezone offsets, date-only values, nullable optional fields and JSON links', () => {
+    const result = issues([record('OPS-1', '', {
+      created_at: '2026-06-01', sync_ts: '2026-09-06T14:00:00+02:00', summary: null,
+      issue_links: JSON.stringify([{ target_key: ' OPS-2 ', type: 'blocks', direction: 'outward' }]),
+    })]);
+    expect(result[0]).toMatchObject({ start: Date.parse('2026-06-01T00:00:00Z'), observed: Date.parse(observed), summary: '',
+      links: [{ targetKey: 'OPS-2', type: 'blocks', display: 'blocks', direction: 'outward' }] });
+  });
+
   it('reads both native VictoriaLogs frames and flat tables', () => {
     const rows = [record('OPS-1'), record('OPS-2')];
     expect(readIssues([logs(rows)], 100)).toEqual(readIssues([table(rows)], 100));
@@ -187,6 +259,12 @@ describe('real parent hierarchy', () => {
     expect(selectRows(result, '', '', [], new Map(), 10).rows).toHaveLength(2);
   });
 
+  it('trims parent identities consistently with ticket keys', () => {
+    const result = buildTree(issues([record(' PM-1 '), record('OPS-1', ' PM-1 ')]));
+    expect(result.roots).toHaveLength(1);
+    expect(selectRows(result, 'PM-1', '', [], new Map(), 2).issues.map((issue) => issue.key)).toEqual(['PM-1', 'OPS-1']);
+  });
+
   it('focuses a selected source without including another source with the same root key', () => {
     const data = issues([record('PM-1'), record('OPS-1', 'PM-1'),
       record('PM-1', '', { instance: 'different' }), record('REL-1', 'PM-1', { instance: 'different' })]);
@@ -259,6 +337,40 @@ describe('real parent hierarchy', () => {
     const tree = buildTree(data);
     const rows = selectRows(tree, '', '', [], new Map(), 2).rows;
     expect(buildRelationships(tree, rows)).toEqual([{ fromId: data[0].id, toId: data[1].id, fromRow: 0, toRow: 1, label: 'blocks' }]);
+  });
+});
+
+describe('reciprocal relationships', () => {
+  it('preserves reciprocal links of the same type', () => {
+    const data = issues([
+      record('OPS-1', '', { issue_links: [{ target_key: 'OPS-2', type: 'blocks', direction: 'outward' }] }),
+      record('OPS-2', '', { issue_links: [{ target_key: 'OPS-1', type: 'blocks', direction: 'outward' }] }),
+    ]);
+    const tree = buildTree(data);
+    expect(buildRelationships(tree, selectRows(tree, '', '', [], new Map(), 2).rows).map(({ fromRow, toRow }) => [fromRow, toRow]))
+      .toEqual([[0, 1], [1, 0]]);
+  });
+});
+
+describe('safe exports', () => {
+  it.each(['=1+1', '+cmd', '-cmd', '@SUM(A1)', '  =1', '\t=1', '\r=1', '\n=1', '\u0000=1', '\tplain'])(
+    'neutralizes spreadsheet formula text %j without modifying JSON', (summary) => {
+      const data = issues([record('OPS-1', '', { summary })]);
+      const tree = buildTree(data);
+      const exported = exportRecords(selectRows(tree, '', '', [], new Map(), 2).exportRows, new Map());
+      expect(exported[0].summary).toBe(summary);
+      const csv = recordsToCsv([{ summary }]);
+      expect(csv).toContain(`'${summary}`);
+    }
+  );
+
+  it('preserves numeric values and serializes nested relationship cells as JSON', () => {
+    const links = [{ targetKey: 'OPS-2', type: 'blocks', display: 'blocks, really', direction: 'outward' }];
+    const csv = recordsToCsv([{ count: -2, links }]);
+    const row = csv.split('\r\n')[1];
+    expect(row.startsWith('-2,')).toBe(true);
+    expect(JSON.parse(row.slice(4, -1).replaceAll('""', '"'))).toEqual(links);
+    expect(csv).not.toContain('[object Object]');
   });
 });
 

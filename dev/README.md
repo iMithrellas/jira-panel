@@ -149,7 +149,7 @@ The datasource-wide `jsonData.maxLines` is also `"10001"`.
 
 Target validation references:
 
-- Repository `grafana/dashboards/jira-issue-explorer.json`, latest-state table: uses `expr`, `queryType: "instant"`, and `extractFields` on `labels`. The development dashboard uses the same transformation to expose named columns to the panel.
+- The development dashboard uses `expr` and `queryType: "instant"`. The panel reads native `labels` objects directly, so no datasource-specific transformation is required. A replacement query can return ordinary table fields matching the [query contract](../README.md#query-contract).
 - [Public catalog versions](https://grafana.com/api/plugins/victoriametrics-logs-datasource/versions): confirms signed catalog version `0.26.3`, requiring Grafana >=10.4.0.
 - [Pinned target types](https://github.com/VictoriaMetrics/victorialogs-datasource/blob/v0.26.3/src/types.ts): `queryType: "instant"` selects raw `/select/logsql/query`, not a stats query; target `maxLines` is numeric, datasource `maxLines` is a string.
 - [Pinned frontend](https://github.com/VictoriaMetrics/victorialogs-datasource/blob/v0.26.3/src/datasource.ts) and [backend](https://github.com/VictoriaMetrics/victorialogs-datasource/blob/v0.26.3/pkg/plugin/query.go): pass the explicit line limit through without a 10,000 clamp. The newer catalog release documents a 10,000 cap, so do not upgrade without checking sentinel behavior.

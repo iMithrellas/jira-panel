@@ -15,6 +15,9 @@ test('loads the plugin with a cache version matching the current build', async (
   expect(response.ok()).toBe(true);
   const metadata = await response.json();
   expect(metadata.info.version).toMatch(new RegExp(`\\+${hash}$`));
+  const servedBundle = await request.get('/public/plugins/easit-jira-panel/module.js');
+  expect(servedBundle.ok()).toBe(true);
+  expect(await servedBundle.body()).toEqual(bundle);
   const urls = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name));
   const pluginUrl = urls.find((url) => new URL(url).pathname === '/public/plugins/easit-jira-panel/module.js');
   expect(pluginUrl).toBeDefined();
@@ -195,4 +198,28 @@ test('handles an absent root and returns to the full dataset', async ({ page }) 
   await expect(page.getByTestId('jira-row')).toHaveCount(0);
   await page.getByRole('textbox', { name: 'Parent ticket', exact: true }).fill('');
   await expect(page.getByTestId('issue-count')).toContainText('3,832 tickets');
+});
+
+test('renders a datasource-neutral table and isolates malformed query rows', async ({ page }) => {
+  await page.route('**/api/ds/query*', (route) => route.fulfill({ json: { results: { A: { status: 200, frames: [{
+    schema: { refId: 'A', fields: [
+      { name: 'issue_key', type: 'string' }, { name: 'created_at', type: 'time' },
+      { name: 'sync_ts', type: 'time' }, { name: 'is_resolved', type: 'boolean' },
+      { name: 'summary', type: 'other' }, { name: 'company', type: 'string' },
+    ] },
+    data: { values: [
+      ['PM-100', 'BAD-1'], [Date.UTC(2026, 8, 1), Date.UTC(2026, 8, 1)],
+      [Date.UTC(2026, 8, 15), Date.UTC(2026, 8, 15)], [false, false],
+      ['<script>alert(1)</script> Plain table ticket', { toString: null }], ['Acme', 'Invalid'],
+    ] },
+  }] } } } }));
+  await page.reload();
+  await expect(page.getByTestId('issue-count')).toContainText('1 tickets / 1 rows');
+  await expect(page.getByRole('treegrid')).toContainText('<script>alert(1)</script> Plain table ticket');
+  await expect(page.getByRole('status')).toContainText('1 invalid row(s) excluded');
+  await page.getByRole('combobox', { name: 'Search field' }).selectOption('field:company');
+  await page.getByRole('textbox', { name: 'Search tickets' }).fill('Acme');
+  await expect(page.getByTestId('issue-count')).toContainText('1 tickets / 1 rows');
+  await page.getByRole('button', { name: 'Details for PM-100', exact: true }).click();
+  await expect(page.getByRole('complementary')).toContainText('Unspecified');
 });

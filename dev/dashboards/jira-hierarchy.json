@@ -36,12 +36,6 @@
           "expr": "{app=\"jira-panel-fixture\", instance=\"demo\", environment=\"development\"} kind:=\"issue_state\" | stats by (app, instance, environment, issue_key) row_max(_time) as row | unpack_json from row | fields _time, sync_ts, kind, app, instance, environment, issue_key, project_key, summary, issue_type, parent_key, issue_links, created_at, resolved_at, is_resolved, status, status_category, priority, assignee, company | sort by (issue_key) | limit 10001"
         }
       ],
-      "transformations": [
-        {
-          "id": "extractFields",
-          "options": { "format": "json", "replace": true, "source": "labels" }
-        }
-      ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": {
         "rootKey": "PM-100",

@@ -40,9 +40,12 @@ export function discoverSearchFields(issues: Issue[], configured = ''): SearchFi
 
 function timestamp(value: unknown): number {
   if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : NaN;
+    return new Date(value).getTime();
   }
-  return typeof value === 'string' && value.trim() ? Date.parse(value) : NaN;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.test(value)) { return NaN; }
+  const date = new Date(`${value.slice(0, 10)}T00:00:00Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value.slice(0, 10)) { return NaN; }
+  return Date.parse(value);
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -52,25 +55,26 @@ function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function array(value: unknown): unknown[] {
+function readLinks(value: unknown): IssueLink[] | undefined {
+  if (value == null || value === '') { return []; }
   if (typeof value === 'string') {
-    try { value = JSON.parse(value); } catch { return []; }
+    try { value = JSON.parse(value); } catch { return undefined; }
   }
-  return Array.isArray(value) ? value : [];
-}
-
-function readLinks(value: unknown): IssueLink[] {
-  return array(value).flatMap((entry) => {
+  if (!Array.isArray(value)) { return undefined; }
+  const links: IssueLink[] = [];
+  for (const entry of value) {
     const link = object(entry);
     const direction = link.direction === 'inward' ? 'inward' : link.direction === 'outward' ? 'outward' : undefined;
-    const targetKey = String(link.target_key ?? link.targetKey ?? '').trim();
-    const type = String(link.type ?? '').trim();
-    if (!direction || !targetKey || !type) { return []; }
-    return [{ targetKey, type, display: String(link.display ?? type), direction }];
-  });
+    const target = link.target_key ?? link.targetKey;
+    const targetKey = typeof target === 'string' ? target.trim() : '';
+    const type = typeof link.type === 'string' ? link.type.trim() : '';
+    if (!direction || !targetKey || !type || (link.display != null && typeof link.display !== 'string')) { return undefined; }
+    links.push({ targetKey, type, display: typeof link.display === 'string' ? link.display : type, direction });
+  }
+  return links;
 }
 
-// Accept VictoriaLogs' native logs frames (a labels object per row) and flat tables.
+// Accept ordinary table frames and logs frames whose labels are JSON or objects.
 export function readIssues(frames: DataFrame[], maxIssues: number) {
   const latest = new Map<string, { row: Record<string, unknown>; id: string; source: string; key: string; observed: number }>();
   let invalid = 0;
@@ -78,16 +82,20 @@ export function readIssues(frames: DataFrame[], maxIssues: number) {
   for (const frame of frames) {
     for (let index = 0; index < frame.length; index++) {
       rawRows++;
-      const row: Record<string, unknown> = {};
+      // Raw datasource values are untrusted, not JiraDataRow until validated.
+      const row: Record<string, unknown> = Object.create(null);
       for (const field of frame.fields) {
         if (field.name === 'labels') { Object.assign(row, object(field.values[index])); }
       }
       for (const field of frame.fields) {
         if (field.name !== 'labels') { row[field.name] = field.values[index]; }
       }
-      const key = String(row.issue_key ?? '').trim();
-      const observed = timestamp(row.sync_ts || row._time || row.Time);
-      if (!key || !Number.isFinite(observed)) { invalid++; continue; }
+      const key = typeof row.issue_key === 'string' ? row.issue_key.trim() : '';
+      const observed = timestamp(row.sync_ts ?? row._time ?? row.Time);
+      if (!key || !Number.isFinite(observed) || ['app', 'instance', 'environment'].some((name) => row[name] != null && typeof row[name] !== 'string')) {
+        invalid++;
+        continue;
+      }
       const source = JSON.stringify([row.app ?? '', row.instance ?? '', row.environment ?? '']);
       const id = JSON.stringify([source, key]);
       const previous = latest.get(id);
@@ -102,17 +110,20 @@ export function readIssues(frames: DataFrame[], maxIssues: number) {
     const hasResolutionFlag = resolved || row.is_resolved === false || row.is_resolved === 'false';
     const start = timestamp(row.created_at);
     const end = resolved ? timestamp(row.resolved_at) : observed;
-    if (!hasResolutionFlag || !Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    const links = readLinks(row.issue_links);
+    const invalidText = ['parent_key', 'project_key', 'summary', 'issue_type', 'status', 'status_category', 'assignee', 'priority']
+      .some((name) => row[name] != null && typeof row[name] !== 'string');
+    if (!hasResolutionFlag || !Number.isFinite(start) || !Number.isFinite(end) || end < start || end > observed || !links || invalidText) {
       invalid++;
       continue;
     }
-    const text = (name: string) => String(row[name] ?? '');
+    const text = (name: string) => typeof row[name] === 'string' ? row[name] : '';
     issues.push({
-      id, source, key, parentKey: text('parent_key'),
+      id, source, key, parentKey: text('parent_key').trim(),
       project: text('project_key'), summary: text('summary'), type: text('issue_type'),
       status: text('status'), category: text('status_category'), assignee: text('assignee'),
       priority: text('priority'), start, end, observed, resolved,
-      links: readLinks(row.issue_links),
+      links,
       fields: row, searchValues: searchableValues(row),
     });
   }
@@ -230,7 +241,7 @@ export function buildRelationships(tree: ReturnType<typeof buildTree>, rows: Tre
       const fromId = link.direction === 'outward' ? issue.id : targetID;
       const toId = link.direction === 'outward' ? targetID : issue.id;
       if (!rowIndex.has(fromId) || !rowIndex.has(toId)) { continue; }
-      const edge = [fromId, toId].sort().join('|') + `|${link.type}`;
+      const edge = JSON.stringify([fromId, toId, link.type]);
       if (seen.has(edge)) { continue; }
       seen.add(edge);
       relationships.push({ fromId, toId, fromRow: rowIndex.get(fromId)!, toRow: rowIndex.get(toId)!, label: link.type || link.display });
@@ -323,7 +334,9 @@ export function recordsToCsv(records: Array<Record<string, unknown>>) {
   if (!records.length) { return ''; }
   const columns = Object.keys(records[0]);
   const cell = (value: unknown) => {
-    const text = value === undefined || value === null ? '' : String(value);
+    let text = value === undefined || value === null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+    // CSV quoting alone does not prevent spreadsheet formula execution.
+    if (typeof value === 'string' && (/^[\s\x00-\x1f]*[=+@-]/u.test(text) || /^[\t\r\n]/.test(text))) { text = `'${text}`; }
     return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
   };
   return [columns, ...records.map((record) => columns.map((column) => record[column]))].map((row) => row.map(cell).join(',')).join('\r\n') + '\r\n';

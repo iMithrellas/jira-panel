@@ -22,6 +22,41 @@ export const defaults: JiraOptions = {
   maxIssues: 10000, rowHeight: 36, labelWidth: 420, searchableFields: '',
 };
 
+export interface JiraDataLink {
+  target_key: string;
+  type: string;
+  display?: string;
+  direction: 'inward' | 'outward';
+}
+
+/**
+ * Datasource-neutral row shape. Grafana table fields, or fields nested in a
+ * logs frame's `labels` object, are validated against this contract at runtime.
+ * At least one observation time is required; resolved_at is required when resolved.
+ */
+export interface JiraDataRow {
+  issue_key: string;
+  created_at: string | number;
+  is_resolved: boolean | 'true' | 'false';
+  sync_ts?: string | number;
+  _time?: string | number;
+  Time?: string | number;
+  resolved_at?: string | number;
+  parent_key?: string;
+  project_key?: string;
+  summary?: string;
+  issue_type?: string;
+  status?: string;
+  status_category?: string;
+  assignee?: string;
+  priority?: string;
+  issue_links?: JiraDataLink[] | string;
+  app?: string;
+  instance?: string;
+  environment?: string;
+  [field: string]: unknown;
+}
+
 export interface Issue {
   id: string;
   source: string;
